@@ -12,6 +12,7 @@ from quant_agent_runtime.models import (
     PlanValidationResult,
     ValidationIssue,
 )
+from quant_agent_runtime.orchestration import ensure_step_action_allowed
 from quant_agent_runtime.redaction import find_unsafe_payload_issues
 from quant_agent_runtime.run_state import run_state_for_entry
 from quant_agent_runtime.validation.errors import RuntimeValidationError
@@ -75,6 +76,8 @@ class ActionRequestPreviewService:
                 validation=PlanValidationResult(status="valid"),
                 ledger_recorded=True,
             )
+
+        ensure_step_action_allowed(entry, request.step_id, "preview_action_request")
 
         capability = _capability_snapshot(entry, capability_id, app_id)
         if capability is None:

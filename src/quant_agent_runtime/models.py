@@ -203,6 +203,23 @@ RunState = Literal[
 ]
 
 
+OrchestrationStepStatus = Literal[
+    "not_ready",
+    "needs_preflight",
+    "preflight_blocked",
+    "needs_confirmation",
+    "ready_for_action_request",
+    "ready_for_execution",
+    "completed",
+    "completed_with_warnings",
+    "failed_recoverable",
+    "failed_terminal",
+    "cancelled",
+    "informational",
+    "unsupported",
+]
+
+
 class PlanResult(StrictModel):
     run_id: str
     run_state: RunState
@@ -276,6 +293,89 @@ class ExecutionResult(StrictModel):
     ledger_recorded: bool
 
 
+class RunStatusResult(StrictModel):
+    run_id: str
+    run_state: RunState
+    final_status: str
+    user_goal_summary: str
+    plan: dict[str, Any] | None = None
+    latest_preflight: dict[str, Any] | None = None
+    latest_confirmation: dict[str, Any] | None = None
+    latest_action_request: dict[str, Any] | None = None
+    latest_action_result: dict[str, Any] | None = None
+    latest_cancellation: dict[str, Any] | None = None
+    ledger_summary: dict[str, Any]
+    allowed_next_actions: list[str] = Field(default_factory=list)
+    validation: PlanValidationResult
+
+
+class RunSummary(StrictModel):
+    run_id: str
+    run_state: RunState
+    final_status: str
+    user_goal_summary: str
+    lifecycle_id: str | None = None
+    app_ids: list[str] = Field(default_factory=list)
+    capability_ids: list[str] = Field(default_factory=list)
+    latest_action_result: dict[str, Any] | None = None
+    latest_event_at_utc: str | None = None
+    ledger_summary: dict[str, Any]
+
+
+class RunListResult(StrictModel):
+    runs: list[RunSummary]
+    count: int
+    validation: PlanValidationResult
+
+
+class OrchestrationStepSummary(StrictModel):
+    step_id: str
+    capability_id: str
+    app_id: str
+    title: str
+    risk_tier: str
+    status: OrchestrationStepStatus
+    is_current: bool = False
+    preflight_required: bool = False
+    confirmation_required: bool = False
+    execution_supported: bool = False
+    required_gate: str | None = None
+    blocker_reason: str | None = None
+    latest_preflight_reference: dict[str, Any] | None = None
+    latest_confirmation_reference: dict[str, Any] | None = None
+    latest_action_request_reference: dict[str, Any] | None = None
+    latest_action_result_reference: dict[str, Any] | None = None
+    allowed_actions: list[str] = Field(default_factory=list)
+
+
+class RunOrchestrationResult(StrictModel):
+    run_id: str
+    run_state: RunState
+    final_status: str
+    plan_id: str | None = None
+    current_step_id: str | None = None
+    steps: list[OrchestrationStepSummary]
+    allowed_next_actions: list[str] = Field(default_factory=list)
+    ledger_summary: dict[str, Any]
+    validation: PlanValidationResult
+
+
+class CancellationRequest(StrictModel):
+    run_id: str = Field(min_length=1)
+    cancellation_intent: Literal["cancel_run"]
+    reason: str = Field(min_length=1)
+
+
+class CancellationResult(StrictModel):
+    run_id: str
+    run_state: RunState
+    cancellation: dict[str, Any]
+    final_status: str
+    allowed_next_actions: list[str] = Field(default_factory=list)
+    validation: PlanValidationResult
+    ledger_recorded: bool
+
+
 class LedgerEntry(StrictModel):
     schema_version: str = "1.0"
     data_policy: Literal["summaries_and_references_only"] = "summaries_and_references_only"
@@ -317,6 +417,8 @@ class RuntimeManifest(StrictModel):
     supported_preflight_capabilities: list[str] = Field(default_factory=list)
     supported_execution_capabilities: list[str] = Field(default_factory=list)
     ledger_support_level: str
+    ledger_storage: dict[str, Any] = Field(default_factory=dict)
+    orchestration_support_level: str = "not_available"
     plan_only_support_level: str
     execution_support_level: str
     redaction_support_level: str

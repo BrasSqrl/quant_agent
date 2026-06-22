@@ -36,6 +36,14 @@ def default_capabilities() -> list[CapabilityDefinition]:
             required_fields=["package_summary"],
         ),
         CapabilityDefinition(
+            capability_id="quant_documentation.create_draft_workspace",
+            app_id="quant_documentation",
+            display_name="Create documentation draft workspace",
+            risk_tier=RiskTier.draft_only,
+            required_fields=["package_summary"],
+            confirmation_required=True,
+        ),
+        CapabilityDefinition(
             capability_id="quant_monitoring.validate_bundle",
             app_id="quant_monitoring",
             display_name="Validate monitoring bundle",

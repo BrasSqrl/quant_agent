@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+
 from quant_agent_runtime.model_gateway.provider import (
     ModelProvider,
     ProviderPlanRequest,
@@ -25,7 +27,7 @@ class FakePlanProvider(ModelProvider):
         for index, capability in enumerate(request.capabilities, start=1):
             if not capability.enabled or capability.risk_tier == RiskTier.forbidden:
                 continue
-            action_input: dict[str, str] = {}
+            action_input: dict[str, object] = {}
             for field in capability.required_fields:
                 field_summary = self._safe_field_summary(field, request.context_summary)
                 if field_summary is None:
@@ -65,7 +67,7 @@ class FakePlanProvider(ModelProvider):
             "user_goal_summary": self._summarize_goal(request.user_goal),
             "assumptions": [
                 "Planning uses sanitized summaries and allowed capability metadata only.",
-                "No app workflow execution is permitted in this runtime slice.",
+                "Only confirmed app-owned review-draft actions can execute in this runtime slice.",
             ],
             "missing_inputs": missing_inputs,
             "steps": steps,
@@ -76,10 +78,14 @@ class FakePlanProvider(ModelProvider):
     def _summarize_goal(self, user_goal: str) -> str:
         return " ".join(user_goal.strip().split())[:240]
 
-    def _safe_field_summary(self, field: str, context_summary: dict[str, object]) -> str | None:
+    def _safe_field_summary(self, field: str, context_summary: dict[str, object]) -> object | None:
         value = context_summary.get(field)
         if isinstance(value, str) and value.strip():
             return value[:240]
+        if isinstance(value, dict) and value:
+            return copy.deepcopy(value)
+        if isinstance(value, list) and value:
+            return copy.deepcopy(value[:20])
         return None
 
     def _provider_metadata_for(self, request: ProviderPlanRequest) -> ProviderMetadata:

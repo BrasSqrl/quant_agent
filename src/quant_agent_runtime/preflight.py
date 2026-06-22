@@ -13,6 +13,7 @@ from quant_agent_runtime.models import (
     PreflightResult,
     ValidationIssue,
 )
+from quant_agent_runtime.orchestration import ensure_step_action_allowed
 from quant_agent_runtime.redaction import find_unsafe_payload_issues
 from quant_agent_runtime.run_state import run_state_for_entry
 from quant_agent_runtime.validation.errors import RuntimeValidationError
@@ -47,6 +48,14 @@ class PreflightService:
                 step_id=request.step_id,
             )
 
+        plan_state = run_state_for_entry(entry)
+        if plan_state == "cancelled":
+            raise _rejected(
+                "cancelled_run_preflight",
+                "The recorded run is cancelled and cannot request preflight.",
+                step_id=request.step_id,
+            )
+
         capability_id = str(step.get("capability_id") or "")
         app_id = str(step.get("app_id") or "")
         capability = _capability_snapshot(entry, capability_id, app_id)
@@ -64,6 +73,7 @@ class PreflightService:
                 step_id=request.step_id,
                 capability_id=capability_id or None,
             )
+        ensure_step_action_allowed(entry, request.step_id, "run_preflight")
         if app_id not in {"quant_data", "quant_monitoring"}:
             raise _rejected(
                 "unsupported_preflight_app",

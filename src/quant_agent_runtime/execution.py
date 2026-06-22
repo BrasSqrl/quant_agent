@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 from quant_agent_runtime.app_clients import AgentAppClient, AppClientError
 from quant_agent_runtime.capability_discovery import (
@@ -18,6 +19,7 @@ from quant_agent_runtime.models import (
     PlanValidationResult,
     ValidationIssue,
 )
+from quant_agent_runtime.orchestration import ensure_step_action_allowed
 from quant_agent_runtime.redaction import find_unsafe_payload_issues
 from quant_agent_runtime.run_state import run_state_for_entry
 from quant_agent_runtime.validation.errors import RuntimeValidationError
@@ -55,8 +57,18 @@ class ExecutionService:
 
         capability_id = str(step.get("capability_id") or "")
         app_id = str(step.get("app_id") or "")
+        if run_state_for_entry(entry) == "cancelled":
+            raise _rejected(
+                "cancelled_run_execution",
+                "The recorded run is cancelled and cannot execute.",
+                step_id=request.step_id,
+                capability_id=capability_id or None,
+            )
+
         existing = _existing_successful_result(entry, request.step_id, capability_id, app_id)
-        if existing is not None:
+        existing_failure = _existing_failure_result(entry, request.step_id, capability_id, app_id)
+        existing_result = existing or existing_failure
+        if existing_result is not None:
             action_request = _latest_execution_action_request(
                 entry,
                 request.step_id,
@@ -71,13 +83,13 @@ class ExecutionService:
                     capability_id=capability_id or None,
                 )
             self._validate_action_request(action_request, request.step_id, capability_id)
-            self._validate_action_result(existing, step)
+            self._validate_action_result(existing_result, step)
             return ExecutionResult(
                 run_id=request.run_id,
                 step_id=request.step_id,
                 capability_id=capability_id,
                 action_request=action_request,
-                action_result=existing,
+                action_result=existing_result,
                 run_state=run_state_for_entry(entry),
                 validation=PlanValidationResult(status="valid"),
                 ledger_recorded=True,
@@ -93,6 +105,7 @@ class ExecutionService:
                 capability_id=capability_id or None,
             )
         self._validate_action_request(preview_request, request.step_id, capability_id)
+        ensure_step_action_allowed(entry, request.step_id, "execute_step")
 
         action_request = _execution_action_request(preview_request)
         self._validate_action_request(action_request, request.step_id, capability_id)
@@ -103,12 +116,35 @@ class ExecutionService:
                 capability_id=capability_id,
                 payload={"action_request": action_request},
             )
-        except AppClientError:
-            raise
+        except AppClientError as exc:
+            action_result = _failure_action_result(
+                action_request=action_request,
+                execution_status="failed_recoverable",
+                error_code="app_unavailable" if exc.status_code == 503 else "app_execution_error",
+                error_message="The owning execution app could not complete the requested draft action.",
+                retry_allowed=True,
+            )
         except Exception as exc:
-            raise AppClientError("Execution app call failed.", status_code=502) from exc
+            action_result = _failure_action_result(
+                action_request=action_request,
+                execution_status="failed_recoverable",
+                error_code="app_execution_error",
+                error_message="The owning execution app could not complete the requested draft action.",
+                retry_allowed=True,
+            )
 
-        self._validate_action_result(action_result, step)
+        try:
+            self._validate_action_result(action_result, step)
+        except RuntimeValidationError as exc:
+            action_result = _failure_action_result(
+                action_request=action_request,
+                execution_status="failed_terminal",
+                error_code=_first_error_code(exc, fallback="invalid_app_action_result"),
+                error_message="The owning execution app returned a result that could not be safely accepted.",
+                retry_allowed=False,
+            )
+            self._validate_action_result(action_result, step)
+
         try:
             recorded_entry = self._ledger.append_action_request(request.run_id, action_request)
             recorded_entry = self._ledger.append_action_result(request.run_id, action_result)
@@ -142,14 +178,7 @@ class ExecutionService:
         if capability_id not in SUPPORTED_EXECUTION_CAPABILITIES:
             raise _rejected(
                 "unsupported_execution_capability",
-                "Only the confirmed Studio model configuration draft action can execute in this slice.",
-                step_id=step_id,
-                capability_id=capability_id or None,
-            )
-        if app_id != "quant_studio":
-            raise _rejected(
-                "unsupported_execution_app",
-                "The recorded plan step is owned by an app without configured execution routing.",
+                "Only supported confirmed review-draft app actions can execute in this slice.",
                 step_id=step_id,
                 capability_id=capability_id or None,
             )
@@ -423,6 +452,25 @@ def _existing_successful_result(
     return None
 
 
+def _existing_failure_result(
+    entry: LedgerEntry,
+    step_id: str,
+    capability_id: str,
+    app_id: str,
+) -> dict[str, Any] | None:
+    for record in reversed(entry.action_results):
+        if not isinstance(record, dict):
+            continue
+        if (
+            record.get("step_id") == step_id
+            and record.get("capability_id") == capability_id
+            and record.get("app_id") == app_id
+            and record.get("execution_status") in {"failed_recoverable", "failed_terminal"}
+        ):
+            return record
+    return None
+
+
 def _execution_action_request(preview_request: dict[str, Any]) -> dict[str, Any]:
     action_request = copy.deepcopy(preview_request)
     preview_key = str(action_request.get("idempotency_key") or "")
@@ -432,6 +480,59 @@ def _execution_action_request(preview_request: dict[str, Any]) -> dict[str, Any]
     action_request["execution_request"] = True
     action_request["preview_idempotency_key"] = preview_key
     return action_request
+
+
+def _failure_action_result(
+    *,
+    action_request: dict[str, Any],
+    execution_status: str,
+    error_code: str,
+    error_message: str,
+    retry_allowed: bool,
+) -> dict[str, Any]:
+    error = {
+        "code": error_code,
+        "message": error_message,
+    }
+    return {
+        "schema_version": "1.0",
+        "data_policy": "summaries_and_references_only",
+        "action_run_id": f"action_failed_{uuid4().hex[:12]}",
+        "step_id": action_request.get("step_id"),
+        "capability_id": action_request.get("capability_id"),
+        "app_id": action_request.get("app_id"),
+        "execution_status": execution_status,
+        "accepted_input_summary": {
+            "step_id": action_request.get("step_id"),
+            "capability_id": action_request.get("capability_id"),
+            "input_source": "ledgered_action_request",
+            "app_response_stored": False,
+        },
+        "output_references": [],
+        "warnings": [],
+        "recoverable_errors": [error] if execution_status == "failed_recoverable" else [],
+        "terminal_errors": [error] if execution_status == "failed_terminal" else [],
+        "artifact_references": [],
+        "app_run_reference": None,
+        "validation_results": {
+            "status": "rejected",
+            "errors": [error],
+            "warnings": [],
+        },
+        "recommended_next_step": {
+            "label": "Review the run status and create a new plan before retrying.",
+            "target_app": "quant_agent",
+            "review_only": True,
+        },
+        "retry_allowed": retry_allowed,
+        "state_changed_since_planning": False,
+    }
+
+
+def _first_error_code(exc: RuntimeValidationError, *, fallback: str) -> str:
+    if exc.validation.errors:
+        return exc.validation.errors[0].code
+    return fallback
 
 
 def _utc_now_label() -> str:

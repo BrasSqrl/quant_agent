@@ -45,6 +45,7 @@ class AgentAppClient(Protocol):
 class LocalAgentAppClient:
     quant_data_base_url: str
     quant_studio_base_url: str
+    quant_documentation_base_url: str
     quant_monitoring_base_url: str
     timeout_seconds: float = 5.0
 
@@ -58,6 +59,10 @@ class LocalAgentAppClient:
             quant_studio_base_url=os.environ.get(
                 "QUANT_STUDIO_AGENT_API_BASE_URL",
                 "http://127.0.0.1:8810",
+            ).rstrip("/"),
+            quant_documentation_base_url=os.environ.get(
+                "QUANT_DOCUMENTATION_AGENT_API_BASE_URL",
+                "http://127.0.0.1:8840",
             ).rstrip("/"),
             quant_monitoring_base_url=os.environ.get(
                 "QUANT_MONITORING_AGENT_API_BASE_URL",
@@ -197,6 +202,8 @@ class LocalAgentAppClient:
             return self.quant_data_base_url
         if app_id == "quant_studio":
             return self.quant_studio_base_url
+        if app_id == "quant_documentation":
+            return self.quant_documentation_base_url
         if app_id == "quant_monitoring":
             return self.quant_monitoring_base_url
         return None
@@ -207,6 +214,8 @@ def _app_label(app_id: str) -> str:
         return "Quant Data"
     if app_id == "quant_studio":
         return "Quant Studio"
+    if app_id == "quant_documentation":
+        return "Quant Documentation"
     if app_id == "quant_monitoring":
         return "Quant Monitoring"
     return app_id

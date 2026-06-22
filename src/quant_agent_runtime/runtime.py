@@ -9,13 +9,15 @@ from quant_agent_runtime.confirmation import ConfirmationService
 from quant_agent_runtime.contracts import QuantSuiteContractLoader
 from quant_agent_runtime.contracts.internal_test_fixtures import TEMPORARY_AGENT_CONTRACT_FIXTURES
 from quant_agent_runtime.execution import ExecutionService
-from quant_agent_runtime.ledger import InMemoryLedger
+from quant_agent_runtime.ledger import FileBackedLedger
 from quant_agent_runtime.model_gateway import FakePlanProvider
 from quant_agent_runtime.models import ProviderMode, ProviderRuntimeStatus, RiskTier, RuntimeManifest
+from quant_agent_runtime.orchestration import OrchestrationService
 from quant_agent_runtime.app_clients import LocalAgentAppClient
 from quant_agent_runtime.capability_discovery import CapabilityDiscoveryService
 from quant_agent_runtime.planner import PlannerService
 from quant_agent_runtime.preflight import PreflightService
+from quant_agent_runtime.run_status import RunStatusService
 
 
 @dataclass
@@ -25,6 +27,8 @@ class RuntimeContainer:
     confirmation: ConfirmationService
     action_request: ActionRequestPreviewService
     execution: ExecutionService
+    run_status: RunStatusService
+    orchestration: OrchestrationService
     contract_loader: QuantSuiteContractLoader
     capability_discovery: CapabilityDiscoveryService
     provider_status: ProviderRuntimeStatus | None = None
@@ -55,6 +59,11 @@ class RuntimeContainer:
                 "POST /confirmations",
                 "POST /action-requests",
                 "POST /executions",
+                "GET /runs",
+                "GET /runs/{run_id}",
+                "GET /runs/{run_id}/orchestration",
+                "GET /runs/{run_id}/ledger",
+                "POST /cancellations",
             ],
             supported_provider_modes=[
                 ProviderMode.fake_provider,
@@ -74,14 +83,17 @@ class RuntimeContainer:
             capability_discovery_endpoints=[
                 "quant_data:/api/agent/capabilities",
                 "quant_studio:/api/agent/capabilities",
+                "quant_documentation:/api/agent/capabilities",
                 "quant_monitoring:/api/agent/capabilities",
             ],
             capability_discovery=discovery_result.diagnostics,
             supported_preflight_capabilities=discovery_result.supported_preflight_capabilities,
             supported_execution_capabilities=discovery_result.supported_execution_capabilities,
-            ledger_support_level="plan_preflight_confirmation_execution_in_memory",
+            ledger_support_level="local_json_file_backed",
+            ledger_storage=self.planner.ledger.diagnostics(),
+            orchestration_support_level="manual_guided_existing_steps_only",
             plan_only_support_level="supported",
-            execution_support_level="single_step_studio_draft_only",
+            execution_support_level="single_step_review_draft_actions_only",
             redaction_support_level="deterministic_context_redaction",
             validation_gates=[
                 "provider_output_schema_validation",
@@ -98,7 +110,7 @@ class RuntimeContainer:
             temporary_internal_contract_fixtures=not contract_result.canonical_agent_contracts_loaded,
             provider_status=provider_status,
             safety_boundaries=[
-                "single_step_studio_draft_execution_only",
+                "single_step_review_draft_execution_only",
                 "no_generic_execution",
                 "no_real_provider",
                 "server_side_provider_boundary",
@@ -117,8 +129,8 @@ def _contract_version_from_name(name: str) -> str:
 
 
 def build_runtime() -> RuntimeContainer:
-    ledger = InMemoryLedger()
     contract_loader = QuantSuiteContractLoader()
+    ledger = FileBackedLedger(validate_contract=contract_loader.validate_agent_contract_payload)
     canonical_capabilities = contract_loader.load_agent_capabilities()
     provider_status = contract_loader.load_agent_provider_status()
     planner = PlannerService(
@@ -145,12 +157,16 @@ def build_runtime() -> RuntimeContainer:
         app_client=app_client,
         capability_discovery=capability_discovery,
     )
+    run_status = RunStatusService(ledger=ledger)
+    orchestration = OrchestrationService(ledger=ledger)
     return RuntimeContainer(
         planner=planner,
         preflight=preflight,
         confirmation=confirmation,
         action_request=action_request,
         execution=execution,
+        run_status=run_status,
+        orchestration=orchestration,
         contract_loader=contract_loader,
         capability_discovery=capability_discovery,
         provider_status=provider_status,

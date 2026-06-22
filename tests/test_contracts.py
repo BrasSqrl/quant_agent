@@ -23,9 +23,11 @@ from quant_agent_runtime.models import (
     ProviderMode,
     RedactionSummary,
 )
+from quant_agent_runtime.orchestration import OrchestrationService
 from quant_agent_runtime.preflight import PreflightService
 from quant_agent_runtime.planner import PlannerService
 from quant_agent_runtime.runtime import RuntimeContainer
+from quant_agent_runtime.run_status import RunStatusService
 from quant_agent_runtime.validation.errors import RuntimeValidationError
 
 
@@ -99,6 +101,18 @@ class FakePreflightAppClient:
                 {
                     "capability_id": "quant_studio.prepare_model_config_draft",
                     "app_id": "quant_studio",
+                    "risk_tier": "draft_only",
+                    "enabled": True,
+                    "preflight_required": False,
+                    "confirmation_required": True,
+                    "execution_supported": True,
+                }
+            ]
+        elif app_id == "quant_documentation":
+            capabilities = [
+                {
+                    "capability_id": "quant_documentation.create_draft_workspace",
+                    "app_id": "quant_documentation",
                     "risk_tier": "draft_only",
                     "enabled": True,
                     "preflight_required": False,
@@ -214,6 +228,8 @@ def runtime_with_loader(loader: QuantSuiteContractLoader) -> RuntimeContainer:
             app_client=app_client,
             capability_discovery=discovery,
         ),
+        run_status=RunStatusService(ledger=ledger),
+        orchestration=OrchestrationService(ledger=ledger),
         contract_loader=loader,
         capability_discovery=discovery,
         provider_status=provider_status,
@@ -242,6 +258,7 @@ def test_canonical_capability_example_is_loaded_and_mapped() -> None:
         "quant_data.run_source_preflight",
         "quant_studio.prepare_model_config_draft",
         "quant_documentation.inspect_package",
+        "quant_documentation.create_draft_workspace",
         "quant_monitoring.validate_bundle",
     ]
     assert capabilities[1].confirmation_required is True
@@ -341,6 +358,7 @@ def test_fake_provider_plan_validates_against_agent_plan_contract() -> None:
     assert [step["app_id"] for step in plan["proposed_steps"]] == [
         "quant_data",
         "quant_studio",
+        "quant_documentation",
         "quant_documentation",
         "quant_monitoring",
     ]

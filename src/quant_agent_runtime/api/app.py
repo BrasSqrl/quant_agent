@@ -8,14 +8,20 @@ from quant_agent_runtime.app_clients import AppClientError
 from quant_agent_runtime.models import (
     ActionRequestPreviewRequest,
     ActionRequestPreviewResult,
+    CancellationRequest,
+    CancellationResult,
     ConfirmationRequest,
     ConfirmationResult,
     ExecutionRequest,
     ExecutionResult,
+    LedgerEntry,
     PreflightRequest,
     PreflightResult,
     PlanRequest,
     PlanResult,
+    RunListResult,
+    RunOrchestrationResult,
+    RunStatusResult,
     RuntimeManifest,
 )
 from quant_agent_runtime.runtime import RuntimeContainer, build_runtime
@@ -54,7 +60,7 @@ def create_app(runtime: RuntimeContainer | None = None) -> FastAPI:
             "version": __version__,
             "plan_only_mode": False,
             "execution_supported": True,
-            "execution_support_level": "single_step_studio_draft_only",
+            "execution_support_level": "single_step_review_draft_actions_only",
         }
 
     @api.get("/runtime/manifest", response_model=RuntimeManifest)
@@ -103,14 +109,53 @@ def create_app(runtime: RuntimeContainer | None = None) -> FastAPI:
             return runtime_container.execution.execute_step(request)
         except RuntimeValidationError as exc:
             raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
-        except AppClientError as exc:
-            raise HTTPException(
-                status_code=exc.status_code,
-                detail={
-                    "code": "app_unavailable" if exc.status_code == 503 else "app_execution_error",
-                    "message": str(exc),
-                },
-            ) from exc
+
+    @api.get("/runs", response_model=RunListResult)
+    def list_runs(
+        lifecycle_id: str | None = None,
+        app_id: str | None = None,
+        capability_id: str | None = None,
+        final_status: str | None = None,
+        limit: int = 50,
+    ) -> RunListResult:
+        try:
+            return runtime_container.run_status.list_runs(
+                lifecycle_id=lifecycle_id,
+                app_id=app_id,
+                capability_id=capability_id,
+                final_status=final_status,
+                limit=limit,
+            )
+        except RuntimeValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
+
+    @api.get("/runs/{run_id}", response_model=RunStatusResult)
+    def get_run_status(run_id: str) -> RunStatusResult:
+        try:
+            return runtime_container.run_status.get_run_status(run_id)
+        except RuntimeValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
+
+    @api.get("/runs/{run_id}/orchestration", response_model=RunOrchestrationResult)
+    def get_run_orchestration(run_id: str) -> RunOrchestrationResult:
+        try:
+            return runtime_container.orchestration.get_run_orchestration(run_id)
+        except RuntimeValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
+
+    @api.get("/runs/{run_id}/ledger", response_model=LedgerEntry)
+    def get_run_ledger(run_id: str) -> LedgerEntry:
+        try:
+            return runtime_container.run_status.get_ledger_entry(run_id)
+        except RuntimeValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
+
+    @api.post("/cancellations", response_model=CancellationResult)
+    def cancel_run(request: CancellationRequest) -> CancellationResult:
+        try:
+            return runtime_container.run_status.cancel_run(request)
+        except RuntimeValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
 
     return api
 

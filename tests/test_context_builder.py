@@ -18,9 +18,11 @@ from quant_agent_runtime.contracts import QuantSuiteContractLoader
 from quant_agent_runtime.execution import ExecutionService
 from quant_agent_runtime.ledger import InMemoryLedger
 from quant_agent_runtime.model_gateway import FakePlanProvider
+from quant_agent_runtime.orchestration import OrchestrationService
 from quant_agent_runtime.planner import PlannerService
 from quant_agent_runtime.preflight import PreflightService
 from quant_agent_runtime.runtime import RuntimeContainer
+from quant_agent_runtime.run_status import RunStatusService
 
 
 AGENT_ROOT = Path(__file__).resolve().parents[1]
@@ -85,6 +87,8 @@ def runtime_with_canonical_capabilities() -> RuntimeContainer:
             app_client=app_client,
             capability_discovery=discovery,
         ),
+        run_status=RunStatusService(ledger=ledger),
+        orchestration=OrchestrationService(ledger=ledger),
         contract_loader=loader,
         capability_discovery=discovery,
     )
@@ -120,6 +124,18 @@ class FakePreflightAppClient:
                 {
                     "capability_id": "quant_studio.prepare_model_config_draft",
                     "app_id": "quant_studio",
+                    "risk_tier": "draft_only",
+                    "enabled": True,
+                    "preflight_required": False,
+                    "confirmation_required": True,
+                    "execution_supported": True,
+                }
+            ]
+        elif app_id == "quant_documentation":
+            capabilities = [
+                {
+                    "capability_id": "quant_documentation.create_draft_workspace",
+                    "app_id": "quant_documentation",
                     "risk_tier": "draft_only",
                     "enabled": True,
                     "preflight_required": False,
@@ -285,11 +301,15 @@ def test_lifecycle_context_produces_valid_plan_and_safe_ledger() -> None:
         "quant_data",
         "quant_studio",
         "quant_documentation",
+        "quant_documentation",
         "quant_monitoring",
     ]
     assert {
         item["capability_id"] for item in payload["plan"]["required_confirmations"]
-    } == {"quant_studio.prepare_model_config_draft"}
+    } == {
+        "quant_studio.prepare_model_config_draft",
+        "quant_documentation.create_draft_workspace",
+    }
 
     validate_against_contract(payload["plan"], "agent_plan.v1.schema.json")
     validate_against_contract(

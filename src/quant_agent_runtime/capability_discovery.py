@@ -9,9 +9,19 @@ from quant_agent_runtime.models import CapabilityDefinition
 from quant_agent_runtime.redaction import find_unsafe_payload_issues
 
 
-DISCOVERABLE_AGENT_APPS = ("quant_data", "quant_studio", "quant_monitoring")
+DISCOVERABLE_AGENT_APPS = (
+    "quant_data",
+    "quant_studio",
+    "quant_documentation",
+    "quant_monitoring",
+)
 CAPABILITY_DISCOVERY_DATA_POLICY = "summaries_and_references_only"
-SUPPORTED_EXECUTION_CAPABILITIES = frozenset({"quant_studio.prepare_model_config_draft"})
+SUPPORTED_EXECUTION_CAPABILITIES = frozenset(
+    {
+        "quant_studio.prepare_model_config_draft",
+        "quant_documentation.create_draft_workspace",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -329,7 +339,6 @@ def _execution_capability_supported(
 ) -> bool:
     return (
         canonical.capability_id in SUPPORTED_EXECUTION_CAPABILITIES
-        and canonical.app_id == "quant_studio"
         and canonical.confirmation_required
         and not canonical.preflight_required
         and discovered.get("execution_supported") is True

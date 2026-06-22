@@ -1,4 +1,5 @@
 import copy
+import json
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +13,7 @@ from quant_agent_runtime.capability_discovery import CapabilityDiscoveryService
 from quant_agent_runtime.confirmation import ConfirmationService
 from quant_agent_runtime.contracts import QuantSuiteContractLoader
 from quant_agent_runtime.execution import ExecutionService
-from quant_agent_runtime.ledger import InMemoryLedger
+from quant_agent_runtime.ledger import FileBackedLedger, InMemoryLedger
 from quant_agent_runtime.model_gateway import FakePlanProvider
 from quant_agent_runtime.models import (
     ContextPreview,
@@ -21,9 +22,11 @@ from quant_agent_runtime.models import (
     ProviderMode,
     RedactionSummary,
 )
+from quant_agent_runtime.orchestration import OrchestrationService
 from quant_agent_runtime.planner import PlannerService
 from quant_agent_runtime.preflight import PreflightService
 from quant_agent_runtime.runtime import RuntimeContainer
+from quant_agent_runtime.run_status import RunStatusService
 
 
 AGENT_ROOT = Path(__file__).resolve().parents[1]
@@ -36,6 +39,7 @@ class FakePreflightAppClient:
         response: dict[str, Any] | None = None,
         responses_by_capability: dict[str, dict[str, Any]] | None = None,
         execution_response: dict[str, Any] | None = None,
+        execution_responses_by_capability: dict[str, dict[str, Any]] | None = None,
         execution_error: AppClientError | None = None,
         discovery_payloads_by_app: dict[str, dict[str, Any]] | None = None,
         discovery_errors_by_app: dict[str, AppClientError] | None = None,
@@ -44,10 +48,12 @@ class FakePreflightAppClient:
         self.response = response or _valid_preflight_response()
         self.responses_by_capability = responses_by_capability or {}
         self.execution_response = execution_response or _valid_action_result()
+        self.execution_responses_by_capability = execution_responses_by_capability or {}
         self.execution_error = execution_error
         default_discovery_payloads = {
             "quant_data": _capabilities_payload("quant_data"),
             "quant_studio": _capabilities_payload("quant_studio"),
+            "quant_documentation": _capabilities_payload("quant_documentation"),
             "quant_monitoring": _capabilities_payload("quant_monitoring"),
         }
         if discovery_payloads_by_app:
@@ -110,14 +116,25 @@ class FakePreflightAppClient:
         )
         if self.execution_error is not None:
             raise self.execution_error
-        return copy.deepcopy(self.execution_response)
+        response = self.execution_responses_by_capability.get(capability_id)
+        if response is None and self.execution_response.get("capability_id") == capability_id:
+            response = self.execution_response
+        if response is None and capability_id == "quant_studio.prepare_model_config_draft":
+            response = _valid_action_result()
+        if response is None and capability_id == "quant_documentation.create_draft_workspace":
+            response = _valid_documentation_action_result(step_id="step_4")
+        return copy.deepcopy(response or self.execution_response)
 
 
-def runtime_with_preflight_client(app_client: FakePreflightAppClient) -> RuntimeContainer:
+def runtime_with_preflight_client(
+    app_client: FakePreflightAppClient,
+    *,
+    ledger: InMemoryLedger | None = None,
+) -> RuntimeContainer:
     loader = QuantSuiteContractLoader(QUANT_SUITE_ROOT)
     capabilities = loader.load_agent_capabilities()
     provider_status = loader.load_agent_provider_status()
-    ledger = InMemoryLedger()
+    ledger = ledger or InMemoryLedger()
     discovery = CapabilityDiscoveryService(contract_loader=loader, app_client=app_client)
     return RuntimeContainer(
         planner=PlannerService(
@@ -139,6 +156,8 @@ def runtime_with_preflight_client(app_client: FakePreflightAppClient) -> Runtime
             app_client=app_client,
             capability_discovery=discovery,
         ),
+        run_status=RunStatusService(ledger=ledger),
+        orchestration=OrchestrationService(ledger=ledger),
         contract_loader=loader,
         capability_discovery=discovery,
         provider_status=provider_status,
@@ -234,6 +253,88 @@ def _valid_action_result(
     }
 
 
+def _valid_documentation_action_result(
+    execution_status: str = "succeeded",
+    *,
+    step_id: str = "step_4",
+) -> dict[str, Any]:
+    return {
+        "schema_version": "1.0",
+        "data_policy": "summaries_and_references_only",
+        "action_run_id": "action_documentation_draft_test",
+        "step_id": step_id,
+        "capability_id": "quant_documentation.create_draft_workspace",
+        "app_id": "quant_documentation",
+        "execution_status": execution_status,
+        "accepted_input_summary": {
+            "package_summary": "Documentation package summary is ready for draft workspace setup.",
+            "lifecycle_id": "lifecycle_test",
+        },
+        "output_references": [
+            {
+                "reference_type": "documentation_draft",
+                "reference_id": "documentation_draft_workspace_test",
+                "label": "Documentation draft workspace",
+                "review_status": "manual_review_required",
+            }
+        ],
+        "warnings": [
+            {
+                "code": "human_review_required",
+                "message": "No prose was generated; the workspace requires human drafting and review.",
+            }
+        ],
+        "recoverable_errors": [],
+        "terminal_errors": [],
+        "artifact_references": [],
+        "app_run_reference": None,
+        "validation_results": {"status": "valid", "errors": [], "warnings": []},
+        "recommended_next_step": {
+            "label": "Review the draft workspace in Quant Documentation.",
+            "target_app": "quant_documentation",
+            "review_only": True,
+        },
+        "retry_allowed": False,
+        "state_changed_since_planning": False,
+    }
+
+
+def _safe_documentation_package_summary() -> dict[str, Any]:
+    return {
+        "package_metadata": {
+            "documentation_package_id": "documentation_package_test",
+            "source_run_id": "studio_run_test",
+            "checksum_sha256": "abc123safe",
+            "status": "ready_for_draft_workspace",
+        },
+        "documentation_packages": [
+            {
+                "reference_id": "documentation_package_test",
+                "reference_type": "documentation_package",
+                "label": "Safe documentation package",
+                "status": "ready",
+                "summary": "Package summaries and citation evidence are ready for review.",
+            }
+        ],
+        "section_evidence_map": [
+            {
+                "section_id": "model_design",
+                "document_section": "Model design",
+                "parent_heading": "Concept and methodology",
+                "toc_level": 2,
+                "display_order": 1,
+                "required_evidence": ["approved_claim_model_design"],
+            }
+        ],
+        "evidence_summary": {
+            "citable_evidence_count": 4,
+            "citation_map_rows": 6,
+        },
+        "known_gaps": [],
+        "safety_warnings": [],
+    }
+
+
 def _capabilities_payload(app_id: str, capabilities: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     if capabilities is None:
         if app_id == "quant_data":
@@ -274,6 +375,27 @@ def _capabilities_payload(app_id: str, capabilities: list[dict[str, Any]] | None
                     "side_effects": ["draft_only_after_confirmation"],
                     "input_schema": {"required_fields": ["target_summary"]},
                     "output_schema": {"safe_reference_types": ["model_config_draft"]},
+                    "data_policy": "summaries_and_references_only",
+                }
+            ]
+        elif app_id == "quant_documentation":
+            capabilities = [
+                {
+                    "capability_id": "quant_documentation.create_draft_workspace",
+                    "app_id": "quant_documentation",
+                    "version": "1.0-draft",
+                    "display_name": "Create documentation draft workspace",
+                    "summary": "Creates a review-only documentation draft workspace reference from safe package summaries.",
+                    "risk_tier": "draft_only",
+                    "enabled": True,
+                    "preflight_required": False,
+                    "confirmation_required": True,
+                    "execution_supported": True,
+                    "idempotent": True,
+                    "reversible": True,
+                    "side_effects": ["draft_only_after_confirmation"],
+                    "input_schema": {"required_fields": ["package_summary"]},
+                    "output_schema": {"safe_reference_types": ["documentation_draft"]},
                     "data_policy": "summaries_and_references_only",
                 }
             ]
@@ -349,13 +471,51 @@ def _create_plan_with_lifecycle_reference(client: TestClient) -> dict[str, Any]:
     return response.json()
 
 
-def _create_confirmed_studio_preview(client: TestClient) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
-    plan_payload = _create_plan_with_lifecycle_reference(client)
-    studio_step = next(
+def _create_plan_with_documentation_package_reference(client: TestClient) -> dict[str, Any]:
+    response = client.post(
+        "/plans",
+        json={
+            "user_goal": "Create a review-only documentation draft workspace from safe package summaries.",
+            "context_summary": {
+                "lifecycle_summary": {
+                    "lifecycle_id": "lifecycle_test",
+                    "state": "ready_for_documentation",
+                    "summary": "Lifecycle has safe source, target, package, and monitoring summaries.",
+                },
+                "source_summary": "Development sample is registered.",
+                "target_summary": "Default flag is the candidate target.",
+                "package_summary": _safe_documentation_package_summary(),
+                "bundle_summary": "Monitoring bundle is available.",
+            },
+        },
+    )
+    assert response.status_code == 200
+    return response.json()
+
+
+def _step_for_capability(plan_payload: dict[str, Any], capability_id: str) -> dict[str, Any]:
+    return next(
         step
         for step in plan_payload["plan"]["proposed_steps"]
-        if step["capability_id"] == "quant_studio.prepare_model_config_draft"
+        if step["capability_id"] == capability_id
     )
+
+
+def _run_source_preflight(client: TestClient, plan_payload: dict[str, Any]) -> dict[str, Any]:
+    source_step = _step_for_capability(plan_payload, "quant_data.run_source_preflight")
+    response = client.post(
+        "/preflights",
+        json={"run_id": plan_payload["run_id"], "step_id": source_step["step_id"]},
+    )
+    assert response.status_code == 200
+    return response.json()
+
+
+def _create_studio_preview(
+    client: TestClient,
+    plan_payload: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    studio_step = _step_for_capability(plan_payload, "quant_studio.prepare_model_config_draft")
     confirmation_response = client.post(
         "/confirmations",
         json={
@@ -370,11 +530,92 @@ def _create_confirmed_studio_preview(client: TestClient) -> tuple[dict[str, Any]
         json={"run_id": plan_payload["run_id"], "step_id": studio_step["step_id"]},
     )
     assert preview_response.status_code == 200
-    return plan_payload, studio_step, preview_response.json()
+    return studio_step, preview_response.json()
+
+
+def _complete_studio_step(
+    client: TestClient,
+    plan_payload: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    studio_step, preview_payload = _create_studio_preview(client, plan_payload)
+    execution_response = client.post(
+        "/executions",
+        json={"run_id": plan_payload["run_id"], "step_id": studio_step["step_id"]},
+    )
+    assert execution_response.status_code == 200
+    return studio_step, preview_payload
+
+
+def _create_documentation_preview(
+    client: TestClient,
+    plan_payload: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    documentation_step = _step_for_capability(
+        plan_payload,
+        "quant_documentation.create_draft_workspace",
+    )
+    confirmation_response = client.post(
+        "/confirmations",
+        json={
+            "run_id": plan_payload["run_id"],
+            "step_id": documentation_step["step_id"],
+            "confirmation_intent": "approve_plan_step",
+        },
+    )
+    assert confirmation_response.status_code == 200
+    preview_response = client.post(
+        "/action-requests",
+        json={"run_id": plan_payload["run_id"], "step_id": documentation_step["step_id"]},
+    )
+    assert preview_response.status_code == 200
+    return documentation_step, preview_response.json()
+
+
+def _complete_documentation_step(
+    client: TestClient,
+    plan_payload: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    documentation_step, preview_payload = _create_documentation_preview(client, plan_payload)
+    execution_response = client.post(
+        "/executions",
+        json={"run_id": plan_payload["run_id"], "step_id": documentation_step["step_id"]},
+    )
+    assert execution_response.status_code == 200
+    return documentation_step, preview_payload
+
+
+def _advance_to_studio_step(client: TestClient, plan_payload: dict[str, Any]) -> None:
+    _run_source_preflight(client, plan_payload)
+
+
+def _advance_to_documentation_step(client: TestClient, plan_payload: dict[str, Any]) -> None:
+    _advance_to_studio_step(client, plan_payload)
+    _complete_studio_step(client, plan_payload)
+
+
+def _advance_to_monitoring_step(client: TestClient, plan_payload: dict[str, Any]) -> None:
+    _advance_to_documentation_step(client, plan_payload)
+    _complete_documentation_step(client, plan_payload)
+
+
+def _create_confirmed_studio_preview(client: TestClient) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    plan_payload = _create_plan_with_lifecycle_reference(client)
+    _advance_to_studio_step(client, plan_payload)
+    studio_step, preview_payload = _create_studio_preview(client, plan_payload)
+    return plan_payload, studio_step, preview_payload
+
+
+def _create_confirmed_documentation_preview(
+    client: TestClient,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    plan_payload = _create_plan_with_documentation_package_reference(client)
+    _advance_to_documentation_step(client, plan_payload)
+    documentation_step, preview_payload = _create_documentation_preview(client, plan_payload)
+    return plan_payload, documentation_step, preview_payload
 
 
 def test_health_endpoint_works() -> None:
-    client = TestClient(create_app())
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
 
     response = client.get("/health")
 
@@ -382,7 +623,7 @@ def test_health_endpoint_works() -> None:
     assert response.json()["status"] == "ok"
     assert response.json()["plan_only_mode"] is False
     assert response.json()["execution_supported"] is True
-    assert response.json()["execution_support_level"] == "single_step_studio_draft_only"
+    assert response.json()["execution_support_level"] == "single_step_review_draft_actions_only"
 
 
 def test_runtime_manifest_returns_supported_modes() -> None:
@@ -401,12 +642,21 @@ def test_runtime_manifest_returns_supported_modes() -> None:
     assert "POST /confirmations" in manifest["supported_routes"]
     assert "POST /action-requests" in manifest["supported_routes"]
     assert "POST /executions" in manifest["supported_routes"]
+    assert "GET /runs" in manifest["supported_routes"]
+    assert "GET /runs/{run_id}" in manifest["supported_routes"]
+    assert "GET /runs/{run_id}/orchestration" in manifest["supported_routes"]
+    assert "GET /runs/{run_id}/ledger" in manifest["supported_routes"]
+    assert "POST /cancellations" in manifest["supported_routes"]
     assert manifest["runtime_health_endpoint"] == "/health"
-    assert manifest["execution_support_level"] == "single_step_studio_draft_only"
+    assert manifest["execution_support_level"] == "single_step_review_draft_actions_only"
+    assert manifest["ledger_support_level"] == "local_json_file_backed"
+    assert manifest["orchestration_support_level"] == "manual_guided_existing_steps_only"
+    assert manifest["ledger_storage"]["storage_mode"] == "memory"
     assert manifest["provider_status"]["supports_execution"] is False
     assert manifest["provider_status"]["hosted_provider_enabled"] is False
     assert "quant_data:/api/agent/capabilities" in manifest["capability_discovery_endpoints"]
     assert "quant_studio:/api/agent/capabilities" in manifest["capability_discovery_endpoints"]
+    assert "quant_documentation:/api/agent/capabilities" in manifest["capability_discovery_endpoints"]
     assert "quant_monitoring:/api/agent/capabilities" in manifest["capability_discovery_endpoints"]
     assert manifest["supported_preflight_capabilities"] == [
         "quant_data.run_source_preflight",
@@ -415,6 +665,7 @@ def test_runtime_manifest_returns_supported_modes() -> None:
     assert manifest["capability_discovery"]["discovered_apps"] == [
         "quant_data",
         "quant_studio",
+        "quant_documentation",
         "quant_monitoring",
     ]
     assert manifest["capability_discovery"]["unavailable_apps"] == []
@@ -424,11 +675,152 @@ def test_runtime_manifest_returns_supported_modes() -> None:
         "quant_monitoring.validate_bundle",
     ]
     assert manifest["supported_execution_capabilities"] == [
-        "quant_studio.prepare_model_config_draft"
+        "quant_studio.prepare_model_config_draft",
+        "quant_documentation.create_draft_workspace",
     ]
     assert manifest["capability_discovery"]["supported_execution_capabilities"] == [
-        "quant_studio.prepare_model_config_draft"
+        "quant_studio.prepare_model_config_draft",
+        "quant_documentation.create_draft_workspace",
     ]
+
+
+def test_file_backed_ledger_persists_plan_and_exposes_safe_ledger(tmp_path: Path) -> None:
+    loader = QuantSuiteContractLoader(QUANT_SUITE_ROOT)
+    ledger = FileBackedLedger(
+        tmp_path,
+        validate_contract=loader.validate_agent_contract_payload,
+    )
+    runtime = runtime_with_preflight_client(FakePreflightAppClient(), ledger=ledger)
+    client = TestClient(create_app(runtime))
+
+    plan_payload = _create_plan_with_lifecycle_reference(client)
+    ledger_files = list(tmp_path.glob("*.json"))
+    assert len(ledger_files) == 1
+    stored_payload = json.loads(ledger_files[0].read_text(encoding="utf-8"))
+    assert stored_payload["run_id"] == plan_payload["run_id"]
+    loader.validate_agent_contract_payload(stored_payload, "agent_execution_ledger.v1.schema.json")
+
+    ledger_response = client.get(f"/runs/{plan_payload['run_id']}/ledger")
+    assert ledger_response.status_code == 200
+    exported = ledger_response.json()
+    assert exported["run_id"] == plan_payload["run_id"]
+    assert exported["data_policy"] == "summaries_and_references_only"
+    assert str(tmp_path) not in ledger_response.text
+    assert "raw_path" not in ledger_response.text
+    loader.validate_agent_contract_payload(exported, "agent_execution_ledger.v1.schema.json")
+
+
+def test_file_backed_ledger_reload_restores_run_status_and_list_filters(tmp_path: Path) -> None:
+    loader = QuantSuiteContractLoader(QUANT_SUITE_ROOT)
+    first_ledger = FileBackedLedger(
+        tmp_path,
+        validate_contract=loader.validate_agent_contract_payload,
+    )
+    first_runtime = runtime_with_preflight_client(FakePreflightAppClient(), ledger=first_ledger)
+    first_client = TestClient(create_app(first_runtime))
+    plan_payload, documentation_step, _preview_payload = _create_confirmed_documentation_preview(first_client)
+
+    second_ledger = FileBackedLedger(
+        tmp_path,
+        validate_contract=loader.validate_agent_contract_payload,
+    )
+    second_runtime = runtime_with_preflight_client(FakePreflightAppClient(), ledger=second_ledger)
+    second_client = TestClient(create_app(second_runtime))
+
+    status = second_client.get(f"/runs/{plan_payload['run_id']}")
+    assert status.status_code == 200
+    assert status.json()["run_id"] == plan_payload["run_id"]
+    assert status.json()["latest_action_request"]["step_id"] == documentation_step["step_id"]
+
+    all_runs = second_client.get("/runs")
+    by_lifecycle = second_client.get("/runs", params={"lifecycle_id": "lifecycle_test"})
+    by_app = second_client.get("/runs", params={"app_id": "quant_documentation"})
+    by_capability = second_client.get(
+        "/runs",
+        params={"capability_id": "quant_documentation.create_draft_workspace"},
+    )
+    by_missing = second_client.get("/runs", params={"lifecycle_id": "lifecycle_missing"})
+
+    assert all_runs.status_code == 200
+    assert all_runs.json()["count"] == 1
+    assert all_runs.json()["runs"][0]["run_id"] == plan_payload["run_id"]
+    assert all_runs.json()["runs"][0]["lifecycle_id"] == "lifecycle_test"
+    assert "quant_documentation" in all_runs.json()["runs"][0]["app_ids"]
+    assert "quant_documentation.create_draft_workspace" in all_runs.json()["runs"][0]["capability_ids"]
+    assert by_lifecycle.json()["count"] == 1
+    assert by_app.json()["count"] == 1
+    assert by_capability.json()["count"] == 1
+    assert by_missing.json()["count"] == 0
+
+
+def test_file_backed_ledger_ignores_malformed_files_without_leaking_paths(tmp_path: Path) -> None:
+    loader = QuantSuiteContractLoader(QUANT_SUITE_ROOT)
+    (tmp_path / "bad.json").write_text('{"not": "a ledger"}', encoding="utf-8")
+
+    ledger = FileBackedLedger(
+        tmp_path,
+        validate_contract=loader.validate_agent_contract_payload,
+    )
+    runtime = runtime_with_preflight_client(FakePreflightAppClient(), ledger=ledger)
+    client = TestClient(create_app(runtime))
+
+    manifest = client.get("/runtime/manifest")
+    assert manifest.status_code == 200
+    storage = manifest.json()["ledger_storage"]
+    assert storage["storage_mode"] == "local_json_file_backed"
+    assert storage["loaded_entry_count"] == 0
+    assert storage["invalid_entry_count"] == 1
+    assert str(tmp_path) not in manifest.text
+
+
+def test_file_backed_ledger_persists_failure_and_cancellation_records(tmp_path: Path) -> None:
+    loader = QuantSuiteContractLoader(QUANT_SUITE_ROOT)
+    failure_ledger = FileBackedLedger(
+        tmp_path / "failure",
+        validate_contract=loader.validate_agent_contract_payload,
+    )
+    failing_client = FakePreflightAppClient(
+        execution_error=AppClientError("Quant Studio execution app is unavailable.", status_code=503)
+    )
+    failure_runtime = runtime_with_preflight_client(failing_client, ledger=failure_ledger)
+    failure_api = TestClient(create_app(failure_runtime))
+    failure_plan, failure_step, _preview_payload = _create_confirmed_studio_preview(failure_api)
+
+    execution = failure_api.post(
+        "/executions",
+        json={"run_id": failure_plan["run_id"], "step_id": failure_step["step_id"]},
+    )
+    assert execution.status_code == 200
+    assert execution.json()["run_state"] == "failed_recoverable"
+    failure_file = next((tmp_path / "failure").glob("*.json"))
+    failure_payload = json.loads(failure_file.read_text(encoding="utf-8"))
+    assert failure_payload["action_results"][0]["execution_status"] == "failed_recoverable"
+    loader.validate_agent_contract_payload(failure_payload, "agent_execution_ledger.v1.schema.json")
+
+    cancellation_ledger = FileBackedLedger(
+        tmp_path / "cancellation",
+        validate_contract=loader.validate_agent_contract_payload,
+    )
+    cancellation_runtime = runtime_with_preflight_client(
+        FakePreflightAppClient(),
+        ledger=cancellation_ledger,
+    )
+    cancellation_api = TestClient(create_app(cancellation_runtime))
+    cancellation_plan = _create_plan_with_lifecycle_reference(cancellation_api)
+    cancellation = cancellation_api.post(
+        "/cancellations",
+        json={
+            "run_id": cancellation_plan["run_id"],
+            "cancellation_intent": "cancel_run",
+            "reason": "user_cancelled",
+        },
+    )
+    assert cancellation.status_code == 200
+    cancellation_file = next((tmp_path / "cancellation").glob("*.json"))
+    cancellation_payload = json.loads(cancellation_file.read_text(encoding="utf-8"))
+    assert cancellation_payload["final_status"] == "cancelled"
+    assert cancellation_payload["cancellation_events"][0]["status"] == "cancelled"
+    loader.validate_agent_contract_payload(cancellation_payload, "agent_execution_ledger.v1.schema.json")
 
 
 def test_runtime_manifest_reports_unavailable_app_capability_discovery() -> None:
@@ -446,11 +838,12 @@ def test_runtime_manifest_reports_unavailable_app_capability_discovery() -> None
 
     assert response.status_code == 200
     discovery = response.json()["capability_discovery"]
-    assert discovery["discovered_apps"] == ["quant_data", "quant_studio"]
+    assert discovery["discovered_apps"] == ["quant_data", "quant_studio", "quant_documentation"]
     assert discovery["unavailable_apps"] == ["quant_monitoring"]
     assert discovery["supported_preflight_capabilities"] == ["quant_data.run_source_preflight"]
     assert discovery["supported_execution_capabilities"] == [
-        "quant_studio.prepare_model_config_draft"
+        "quant_studio.prepare_model_config_draft",
+        "quant_documentation.create_draft_workspace",
     ]
     assert "quant_monitoring.validate_bundle" not in response.json()["supported_preflight_capabilities"]
     assert discovery["reconciliation_warnings"][0]["code"] == "app_capability_discovery_unavailable"
@@ -602,7 +995,7 @@ def test_runtime_manifest_warns_on_malformed_capability_entries() -> None:
 
 
 def test_local_browser_cors_preflight_allows_plan_requests() -> None:
-    client = TestClient(create_app())
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
 
     response = client.options(
         "/plans",
@@ -619,7 +1012,7 @@ def test_local_browser_cors_preflight_allows_plan_requests() -> None:
 
 
 def test_fake_provider_can_produce_valid_plan() -> None:
-    client = TestClient(create_app())
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
 
     response = client.post(
         "/plans",
@@ -638,7 +1031,7 @@ def test_fake_provider_can_produce_valid_plan() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["validation"]["status"] == "valid"
-    assert payload["run_state"] == "waiting_for_confirmation"
+    assert payload["run_state"] == "planned"
     assert payload["provider_metadata"]["supports_execution"] is False
     assert payload["provider_metadata"]["provider_mode"] in {
         "fake_provider",
@@ -651,15 +1044,19 @@ def test_fake_provider_can_produce_valid_plan() -> None:
         "quant_data",
         "quant_studio",
         "quant_documentation",
+        "quant_documentation",
         "quant_monitoring",
     ]
-    assert payload["plan"]["required_confirmations"][0]["capability_id"] == (
-        "quant_studio.prepare_model_config_draft"
-    )
+    assert {
+        item["capability_id"] for item in payload["plan"]["required_confirmations"]
+    } == {
+        "quant_studio.prepare_model_config_draft",
+        "quant_documentation.create_draft_workspace",
+    }
 
 
 def test_missing_required_context_fields_become_missing_inputs() -> None:
-    client = TestClient(create_app())
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
 
     response = client.post(
         "/plans",
@@ -679,9 +1076,9 @@ def test_missing_required_context_fields_become_missing_inputs() -> None:
 
 
 def test_no_execution_endpoint_exists() -> None:
-    client = TestClient(create_app())
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
 
-    assert client.post("/runs", json={}).status_code == 404
+    assert client.post("/runs", json={}).status_code in {404, 405}
     assert client.post("/execute", json={}).status_code == 404
     assert client.post("/preflight", json={}).status_code == 404
     assert client.post("/runtime/preflight", json={}).status_code == 404
@@ -734,7 +1131,8 @@ def test_preflight_resolves_monitoring_plan_step_and_ledgers_response() -> None:
     )
     runtime = runtime_with_preflight_client(app_client)
     client = TestClient(create_app(runtime))
-    plan_payload = _create_plan(client)
+    plan_payload = _create_plan_with_lifecycle_reference(client)
+    _advance_to_monitoring_step(client, plan_payload)
     monitoring_step = next(
         step
         for step in plan_payload["plan"]["proposed_steps"]
@@ -749,17 +1147,17 @@ def test_preflight_resolves_monitoring_plan_step_and_ledgers_response() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["capability_id"] == "quant_monitoring.validate_bundle"
-    assert payload["run_state"] == "waiting_for_confirmation"
+    assert payload["run_state"] == "completed"
     assert payload["preflight"]["app_id"] == "quant_monitoring"
     assert payload["preflight"]["safe_artifact_references"][0]["reference_type"] == "monitoring_bundle"
-    assert len(app_client.calls) == 1
-    app_call = app_client.calls[0]
+    assert len(app_client.calls) == 2
+    app_call = app_client.calls[-1]
     assert app_call["app_id"] == "quant_monitoring"
     assert app_call["capability_id"] == "quant_monitoring.validate_bundle"
     assert app_call["payload"]["action_input"] == monitoring_step["action_input"]
-    assert app_call["payload"]["context_summary"]["bundle_summary"] == "Monitoring bundle is not available."
+    assert app_call["payload"]["context_summary"]["bundle_summary"] == "Monitoring bundle is available."
     entry = runtime.planner.ledger.list_entries()[0]
-    assert entry.preflight_records[0]["capability_id"] == "quant_monitoring.validate_bundle"
+    assert entry.preflight_records[-1]["capability_id"] == "quant_monitoring.validate_bundle"
 
 
 def test_preflight_can_record_multiple_app_owned_preflights_and_validate_ledger() -> None:
@@ -774,7 +1172,7 @@ def test_preflight_can_record_multiple_app_owned_preflights_and_validate_ledger(
     )
     runtime = runtime_with_preflight_client(app_client)
     client = TestClient(create_app(runtime))
-    plan_payload = _create_plan(client)
+    plan_payload = _create_plan_with_lifecycle_reference(client)
     source_step = next(
         step
         for step in plan_payload["plan"]["proposed_steps"]
@@ -790,6 +1188,8 @@ def test_preflight_can_record_multiple_app_owned_preflights_and_validate_ledger(
         "/preflights",
         json={"run_id": plan_payload["run_id"], "step_id": source_step["step_id"]},
     )
+    _complete_studio_step(client, plan_payload)
+    _complete_documentation_step(client, plan_payload)
     monitoring_response = client.post(
         "/preflights",
         json={"run_id": plan_payload["run_id"], "step_id": monitoring_step["step_id"]},
@@ -835,6 +1235,7 @@ def test_confirmation_records_required_step_and_validates_ledger() -> None:
     runtime = runtime_with_preflight_client(app_client)
     client = TestClient(create_app(runtime))
     plan_payload = _create_plan(client)
+    _advance_to_studio_step(client, plan_payload)
     studio_step = next(
         step
         for step in plan_payload["plan"]["proposed_steps"]
@@ -877,6 +1278,7 @@ def test_action_request_preview_records_confirmed_studio_step_and_validates_ledg
     runtime = runtime_with_preflight_client(app_client)
     client = TestClient(create_app(runtime))
     plan_payload = _create_plan_with_lifecycle_reference(client)
+    _advance_to_studio_step(client, plan_payload)
     studio_step = next(
         step
         for step in plan_payload["plan"]["proposed_steps"]
@@ -891,7 +1293,6 @@ def test_action_request_preview_records_confirmed_studio_step_and_validates_ledg
         },
     )
     assert confirmation_response.status_code == 200
-
     response = client.post(
         "/action-requests",
         json={"run_id": plan_payload["run_id"], "step_id": studio_step["step_id"]},
@@ -938,7 +1339,7 @@ def test_action_request_preview_records_confirmed_studio_step_and_validates_ledg
     )
 
 
-def test_action_request_preview_records_data_and_monitoring_preflight_steps() -> None:
+def test_action_request_preview_rejects_preflight_only_orchestration_steps() -> None:
     app_client = FakePreflightAppClient(
         responses_by_capability={
             "quant_data.run_source_preflight": _valid_preflight_response(status="warning"),
@@ -971,27 +1372,34 @@ def test_action_request_preview_records_data_and_monitoring_preflight_steps() ->
         json={"run_id": plan_payload["run_id"], "step_id": monitoring_step["step_id"]},
     )
     assert source_preflight.status_code == 200
-    assert monitoring_preflight.status_code == 200
+    assert monitoring_preflight.status_code == 422
+    assert monitoring_preflight.json()["detail"]["errors"][0]["code"] == (
+        "orchestration_step_not_ready"
+    )
 
     source_preview = client.post(
         "/action-requests",
         json={"run_id": plan_payload["run_id"], "step_id": source_step["step_id"]},
+    )
+    _complete_studio_step(client, plan_payload)
+    _complete_documentation_step(client, plan_payload)
+    monitoring_preflight = client.post(
+        "/preflights",
+        json={"run_id": plan_payload["run_id"], "step_id": monitoring_step["step_id"]},
     )
     monitoring_preview = client.post(
         "/action-requests",
         json={"run_id": plan_payload["run_id"], "step_id": monitoring_step["step_id"]},
     )
 
-    assert source_preview.status_code == 200
-    assert monitoring_preview.status_code == 200
-    assert source_preview.json()["action_request"]["preflight_reference"]["status"] == "warning"
-    assert source_preview.json()["action_request"]["confirmation_reference"] is None
-    assert monitoring_preview.json()["action_request"]["preflight_reference"]["app_id"] == "quant_monitoring"
-    assert monitoring_preview.json()["action_request"]["execution_permitted"] is False
+    assert source_preview.status_code == 422
+    assert source_preview.json()["detail"]["errors"][0]["code"] == "orchestration_step_not_current"
+    assert monitoring_preflight.status_code == 200
+    assert monitoring_preview.status_code == 422
+    assert monitoring_preview.json()["detail"]["errors"][0]["code"] == "orchestration_run_terminal"
     entry = runtime.planner.ledger.list_entries()[0]
-    assert [record["capability_id"] for record in entry.action_requests] == [
-        "quant_data.run_source_preflight",
-        "quant_monitoring.validate_bundle",
+    assert "quant_monitoring.validate_bundle" in [
+        record["capability_id"] for record in entry.preflight_records
     ]
 
 
@@ -999,6 +1407,7 @@ def test_action_request_preview_is_idempotent_for_existing_request() -> None:
     runtime = runtime_with_preflight_client(FakePreflightAppClient())
     client = TestClient(create_app(runtime))
     plan_payload = _create_plan_with_lifecycle_reference(client)
+    _advance_to_studio_step(client, plan_payload)
     studio_step = next(
         step
         for step in plan_payload["plan"]["proposed_steps"]
@@ -1046,7 +1455,7 @@ def test_execution_runs_confirmed_studio_draft_step_and_validates_ledger() -> No
     assert payload["run_id"] == plan_payload["run_id"]
     assert payload["step_id"] == studio_step["step_id"]
     assert payload["capability_id"] == "quant_studio.prepare_model_config_draft"
-    assert payload["run_state"] == "completed"
+    assert payload["run_state"] == "waiting_for_confirmation"
     assert payload["validation"]["status"] == "valid"
     assert payload["ledger_recorded"] is True
     action_request = payload["action_request"]
@@ -1066,14 +1475,14 @@ def test_execution_runs_confirmed_studio_draft_step_and_validates_ledger() -> No
     assert app_call["payload"] == {"action_request": action_request}
     assert "raw_path" not in str(app_call)
     entry = runtime.planner.ledger.list_entries()[0]
-    assert [record["execution_permitted"] for record in entry.action_requests] == [False, True]
+    assert [record["execution_permitted"] for record in entry.action_requests[-2:]] == [False, True]
     assert len(entry.action_results) == 1
     runtime.contract_loader.validate_agent_contract_payload(
-        entry.action_requests[1],
+        entry.action_requests[-1],
         "agent_action_request.v1.schema.json",
     )
     runtime.contract_loader.validate_agent_contract_payload(
-        entry.action_results[0],
+        entry.action_results[-1],
         "agent_action_result.v1.schema.json",
     )
     runtime.contract_loader.validate_agent_contract_payload(
@@ -1102,6 +1511,312 @@ def test_execution_duplicate_call_returns_existing_result_without_calling_app_ag
     assert len(entry.action_results) == 1
 
 
+def test_execution_runs_confirmed_documentation_draft_workspace_and_validates_ledger() -> None:
+    app_client = FakePreflightAppClient(
+        execution_response=_valid_documentation_action_result(step_id="step_4")
+    )
+    runtime = runtime_with_preflight_client(app_client)
+    client = TestClient(create_app(runtime))
+    plan_payload, documentation_step, preview_payload = _create_confirmed_documentation_preview(client)
+
+    response = client.post(
+        "/executions",
+        json={"run_id": plan_payload["run_id"], "step_id": documentation_step["step_id"]},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["run_id"] == plan_payload["run_id"]
+    assert payload["step_id"] == documentation_step["step_id"]
+    assert payload["capability_id"] == "quant_documentation.create_draft_workspace"
+    assert payload["run_state"] == "planned"
+    assert payload["validation"]["status"] == "valid"
+    assert payload["ledger_recorded"] is True
+    action_request = payload["action_request"]
+    assert action_request["execution_permitted"] is True
+    assert action_request["execution_request"] is True
+    assert action_request["preview_idempotency_key"] == preview_payload["action_request"]["idempotency_key"]
+    assert action_request["action_input"] == documentation_step["action_input"]
+    assert isinstance(action_request["action_input"]["package_summary"], dict)
+    assert payload["action_result"]["execution_status"] == "succeeded"
+    assert payload["action_result"]["output_references"][0]["reference_type"] == "documentation_draft"
+    documentation_calls = [
+        call
+        for call in app_client.execution_calls
+        if call["capability_id"] == "quant_documentation.create_draft_workspace"
+    ]
+    assert len(documentation_calls) == 1
+    app_call = documentation_calls[0]
+    assert app_call["app_id"] == "quant_documentation"
+    assert app_call["capability_id"] == "quant_documentation.create_draft_workspace"
+    assert app_call["payload"] == {"action_request": action_request}
+    assert "raw_path" not in str(app_call)
+    run_status = client.get(f"/runs/{plan_payload['run_id']}")
+    assert run_status.status_code == 200
+    assert run_status.json()["latest_action_result"]["capability_id"] == (
+        "quant_documentation.create_draft_workspace"
+    )
+    entry = runtime.planner.ledger.list_entries()[0]
+    assert [record["execution_permitted"] for record in entry.action_requests[-2:]] == [False, True]
+    assert len(entry.action_results) == 2
+    runtime.contract_loader.validate_agent_contract_payload(
+        entry.action_requests[-1],
+        "agent_action_request.v1.schema.json",
+    )
+    runtime.contract_loader.validate_agent_contract_payload(
+        entry.action_results[-1],
+        "agent_action_result.v1.schema.json",
+    )
+    runtime.contract_loader.validate_agent_contract_payload(
+        entry.model_dump(mode="json"),
+        "agent_execution_ledger.v1.schema.json",
+    )
+
+
+def test_documentation_execution_duplicate_call_returns_existing_result_without_calling_app_again() -> None:
+    app_client = FakePreflightAppClient(
+        execution_response=_valid_documentation_action_result(step_id="step_4")
+    )
+    runtime = runtime_with_preflight_client(app_client)
+    client = TestClient(create_app(runtime))
+    plan_payload, documentation_step, _preview_payload = _create_confirmed_documentation_preview(client)
+    request = {"run_id": plan_payload["run_id"], "step_id": documentation_step["step_id"]}
+
+    first = client.post("/executions", json=request)
+    second = client.post("/executions", json=request)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["action_result"] == first.json()["action_result"]
+    assert second.json()["action_request"]["capability_id"] == (
+        "quant_documentation.create_draft_workspace"
+    )
+    documentation_calls = [
+        call
+        for call in app_client.execution_calls
+        if call["capability_id"] == "quant_documentation.create_draft_workspace"
+    ]
+    assert len(documentation_calls) == 1
+    entry = runtime.planner.ledger.list_entries()[0]
+    assert len(entry.action_requests) == 4
+    assert len(entry.action_results) == 2
+
+
+def test_run_status_tracks_execution_lifecycle_states() -> None:
+    app_client = FakePreflightAppClient(
+        responses_by_capability={
+            "quant_monitoring.validate_bundle": _valid_preflight_response(
+                capability_id="quant_monitoring.validate_bundle",
+                app_id="quant_monitoring",
+            )
+        }
+    )
+    runtime = runtime_with_preflight_client(app_client)
+    client = TestClient(create_app(runtime))
+    plan_payload = _create_plan_with_lifecycle_reference(client)
+    studio_step = next(
+        step
+        for step in plan_payload["plan"]["proposed_steps"]
+        if step["capability_id"] == "quant_studio.prepare_model_config_draft"
+    )
+    documentation_step = next(
+        step
+        for step in plan_payload["plan"]["proposed_steps"]
+        if step["capability_id"] == "quant_documentation.create_draft_workspace"
+    )
+
+    planned_status = client.get(f"/runs/{plan_payload['run_id']}")
+    assert planned_status.status_code == 200
+    assert planned_status.json()["run_state"] == "planned"
+    assert "run_preflight" in planned_status.json()["allowed_next_actions"]
+    assert planned_status.json()["ledger_summary"]["action_result_count"] == 0
+
+    source_step = next(
+        step
+        for step in plan_payload["plan"]["proposed_steps"]
+        if step["capability_id"] == "quant_data.run_source_preflight"
+    )
+    assert client.post(
+        "/preflights",
+        json={"run_id": plan_payload["run_id"], "step_id": source_step["step_id"]},
+    ).status_code == 200
+    preflighted_status = client.get(f"/runs/{plan_payload['run_id']}")
+    assert preflighted_status.status_code == 200
+    assert preflighted_status.json()["run_state"] == "waiting_for_confirmation"
+    assert "confirm_step" in preflighted_status.json()["allowed_next_actions"]
+
+    assert client.post(
+        "/confirmations",
+        json={
+            "run_id": plan_payload["run_id"],
+            "step_id": studio_step["step_id"],
+            "confirmation_intent": "approve_plan_step",
+        },
+    ).status_code == 200
+    confirmed_status = client.get(f"/runs/{plan_payload['run_id']}")
+    assert confirmed_status.status_code == 200
+    assert confirmed_status.json()["run_state"] == "ready_for_execution_preview"
+    assert "preview_action_request" in confirmed_status.json()["allowed_next_actions"]
+    assert confirmed_status.json()["latest_confirmation"]["status"] == "confirmed"
+
+    assert client.post(
+        "/action-requests",
+        json={"run_id": plan_payload["run_id"], "step_id": studio_step["step_id"]},
+    ).status_code == 200
+    preview_status = client.get(f"/runs/{plan_payload['run_id']}")
+    assert preview_status.status_code == 200
+    assert preview_status.json()["run_state"] == "ready_for_execution_preview"
+    assert "execute_step" in preview_status.json()["allowed_next_actions"]
+    assert preview_status.json()["latest_action_request"]["execution_permitted"] is False
+
+    assert client.post(
+        "/executions",
+        json={"run_id": plan_payload["run_id"], "step_id": studio_step["step_id"]},
+    ).status_code == 200
+    studio_completed_status = client.get(f"/runs/{plan_payload['run_id']}")
+    assert studio_completed_status.status_code == 200
+    assert studio_completed_status.json()["run_state"] == "waiting_for_confirmation"
+    assert "confirm_step" in studio_completed_status.json()["allowed_next_actions"]
+    assert studio_completed_status.json()["latest_action_result"]["execution_status"] == "succeeded"
+
+    assert client.post(
+        "/confirmations",
+        json={
+            "run_id": plan_payload["run_id"],
+            "step_id": documentation_step["step_id"],
+            "confirmation_intent": "approve_plan_step",
+        },
+    ).status_code == 200
+    assert client.post(
+        "/action-requests",
+        json={"run_id": plan_payload["run_id"], "step_id": documentation_step["step_id"]},
+    ).status_code == 200
+    assert client.post(
+        "/executions",
+        json={"run_id": plan_payload["run_id"], "step_id": documentation_step["step_id"]},
+    ).status_code == 200
+    doc_completed_status = client.get(f"/runs/{plan_payload['run_id']}")
+    assert doc_completed_status.status_code == 200
+    assert doc_completed_status.json()["run_state"] == "planned"
+    assert "run_preflight" in doc_completed_status.json()["allowed_next_actions"]
+
+    monitoring_step = next(
+        step
+        for step in plan_payload["plan"]["proposed_steps"]
+        if step["capability_id"] == "quant_monitoring.validate_bundle"
+    )
+    assert client.post(
+        "/preflights",
+        json={"run_id": plan_payload["run_id"], "step_id": monitoring_step["step_id"]},
+    ).status_code == 200
+    completed_status = client.get(f"/runs/{plan_payload['run_id']}")
+    assert completed_status.status_code == 200
+    assert completed_status.json()["run_state"] == "completed"
+    assert completed_status.json()["allowed_next_actions"] == []
+
+
+def test_run_status_unknown_run_is_deterministic() -> None:
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
+
+    response = client.get("/runs/run_missing")
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["errors"][0]["code"] == "unknown_run"
+
+
+def test_orchestration_tracks_current_step_and_blocks_out_of_order_actions() -> None:
+    runtime = runtime_with_preflight_client(FakePreflightAppClient())
+    client = TestClient(create_app(runtime))
+    plan_payload = _create_plan_with_lifecycle_reference(client)
+    source_step = _step_for_capability(plan_payload, "quant_data.run_source_preflight")
+    studio_step = _step_for_capability(plan_payload, "quant_studio.prepare_model_config_draft")
+    monitoring_step = _step_for_capability(plan_payload, "quant_monitoring.validate_bundle")
+
+    initial = client.get(f"/runs/{plan_payload['run_id']}/orchestration")
+    assert initial.status_code == 200
+    initial_payload = initial.json()
+    assert initial_payload["run_state"] == "planned"
+    assert initial_payload["current_step_id"] == source_step["step_id"]
+    assert initial_payload["steps"][0]["status"] == "needs_preflight"
+    assert initial_payload["steps"][1]["status"] == "not_ready"
+    assert initial_payload["steps"][0]["allowed_actions"] == ["run_preflight"]
+
+    future_confirmation = client.post(
+        "/confirmations",
+        json={
+            "run_id": plan_payload["run_id"],
+            "step_id": studio_step["step_id"],
+            "confirmation_intent": "approve_plan_step",
+        },
+    )
+    assert future_confirmation.status_code == 422
+    assert future_confirmation.json()["detail"]["errors"][0]["code"] == (
+        "orchestration_step_not_ready"
+    )
+
+    assert client.post(
+        "/preflights",
+        json={"run_id": plan_payload["run_id"], "step_id": source_step["step_id"]},
+    ).status_code == 200
+    preflighted = client.get(f"/runs/{plan_payload['run_id']}/orchestration").json()
+    assert preflighted["current_step_id"] == studio_step["step_id"]
+    assert preflighted["steps"][0]["status"] == "completed"
+    assert preflighted["steps"][1]["status"] == "needs_confirmation"
+    assert preflighted["allowed_next_actions"] == ["cancel_run", "confirm_step"]
+
+    future_preflight = client.post(
+        "/preflights",
+        json={"run_id": plan_payload["run_id"], "step_id": monitoring_step["step_id"]},
+    )
+    assert future_preflight.status_code == 422
+    assert future_preflight.json()["detail"]["errors"][0]["code"] == (
+        "orchestration_step_not_ready"
+    )
+
+    assert client.post(
+        "/confirmations",
+        json={
+            "run_id": plan_payload["run_id"],
+            "step_id": studio_step["step_id"],
+            "confirmation_intent": "approve_plan_step",
+        },
+    ).status_code == 200
+    confirmed = client.get(f"/runs/{plan_payload['run_id']}/orchestration").json()
+    assert confirmed["current_step_id"] == studio_step["step_id"]
+    assert confirmed["steps"][1]["status"] == "ready_for_action_request"
+    assert confirmed["steps"][1]["allowed_actions"] == ["preview_action_request"]
+
+
+def test_orchestration_restores_current_step_from_durable_ledger(tmp_path: Path) -> None:
+    loader = QuantSuiteContractLoader(QUANT_SUITE_ROOT)
+    first_ledger = FileBackedLedger(
+        tmp_path,
+        validate_contract=loader.validate_agent_contract_payload,
+    )
+    first_runtime = runtime_with_preflight_client(FakePreflightAppClient(), ledger=first_ledger)
+    first_client = TestClient(create_app(first_runtime))
+    plan_payload = _create_plan_with_lifecycle_reference(first_client)
+    _run_source_preflight(first_client, plan_payload)
+
+    reloaded_ledger = FileBackedLedger(
+        tmp_path,
+        validate_contract=loader.validate_agent_contract_payload,
+    )
+    reloaded_runtime = runtime_with_preflight_client(
+        FakePreflightAppClient(),
+        ledger=reloaded_ledger,
+    )
+    reloaded_client = TestClient(create_app(reloaded_runtime))
+    response = reloaded_client.get(f"/runs/{plan_payload['run_id']}/orchestration")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["run_state"] == "waiting_for_confirmation"
+    current = next(step for step in payload["steps"] if step["is_current"])
+    assert current["capability_id"] == "quant_studio.prepare_model_config_draft"
+    assert current["status"] == "needs_confirmation"
+
+
 def test_execution_rejects_missing_preview_missing_confirmation_and_unsupported_step() -> None:
     client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
     plan_payload = _create_plan_with_lifecycle_reference(client)
@@ -1120,6 +1835,7 @@ def test_execution_rejects_missing_preview_missing_confirmation_and_unsupported_
         "/executions",
         json={"run_id": plan_payload["run_id"], "step_id": source_step["step_id"]},
     )
+    _advance_to_studio_step(client, plan_payload)
     missing_confirmation = client.post(
         "/executions",
         json={"run_id": plan_payload["run_id"], "step_id": studio_step["step_id"]},
@@ -1185,11 +1901,12 @@ def test_execution_rejects_when_studio_app_unavailable_or_capability_not_adverti
     assert disabled_client.execution_calls == []
 
 
-def test_execution_rejects_app_unavailable_malformed_and_unsafe_results() -> None:
+def test_execution_ledgers_safe_failure_results_for_app_unavailable_malformed_and_unsafe_results() -> None:
     app_unavailable = FakePreflightAppClient(
         execution_error=AppClientError("Quant Studio execution app is unavailable.", status_code=503)
     )
-    app_unavailable_api = TestClient(create_app(runtime_with_preflight_client(app_unavailable)))
+    app_unavailable_runtime = runtime_with_preflight_client(app_unavailable)
+    app_unavailable_api = TestClient(create_app(app_unavailable_runtime))
     plan_payload, studio_step, _preview_payload = _create_confirmed_studio_preview(app_unavailable_api)
     unavailable_response = app_unavailable_api.post(
         "/executions",
@@ -1199,7 +1916,8 @@ def test_execution_rejects_app_unavailable_malformed_and_unsafe_results() -> Non
     malformed_result = _valid_action_result()
     malformed_result.pop("action_run_id")
     malformed = FakePreflightAppClient(execution_response=malformed_result)
-    malformed_api = TestClient(create_app(runtime_with_preflight_client(malformed)))
+    malformed_runtime = runtime_with_preflight_client(malformed)
+    malformed_api = TestClient(create_app(malformed_runtime))
     malformed_plan, malformed_step, _malformed_preview = _create_confirmed_studio_preview(
         malformed_api
     )
@@ -1211,20 +1929,244 @@ def test_execution_rejects_app_unavailable_malformed_and_unsafe_results() -> Non
     unsafe_result = _valid_action_result()
     unsafe_result["raw_path"] = "C:\\Users\\matth\\Desktop\\private\\raw.csv"
     unsafe = FakePreflightAppClient(execution_response=unsafe_result)
-    unsafe_api = TestClient(create_app(runtime_with_preflight_client(unsafe)))
+    unsafe_runtime = runtime_with_preflight_client(unsafe)
+    unsafe_api = TestClient(create_app(unsafe_runtime))
     unsafe_plan, unsafe_step, _unsafe_preview = _create_confirmed_studio_preview(unsafe_api)
     unsafe_response = unsafe_api.post(
         "/executions",
         json={"run_id": unsafe_plan["run_id"], "step_id": unsafe_step["step_id"]},
     )
 
-    assert unavailable_response.status_code == 503
-    assert unavailable_response.json()["detail"]["code"] == "app_unavailable"
-    assert malformed_response.status_code == 422
-    assert malformed_response.json()["detail"]["errors"][0]["code"] == "malformed_app_action_result"
-    assert unsafe_response.status_code == 422
-    assert unsafe_response.json()["detail"]["errors"][0]["code"] == "unsafe_app_action_result"
+    assert unavailable_response.status_code == 200
+    assert unavailable_response.json()["run_state"] == "failed_recoverable"
+    assert unavailable_response.json()["action_result"]["execution_status"] == "failed_recoverable"
+    assert unavailable_response.json()["action_result"]["recoverable_errors"][0]["code"] == "app_unavailable"
+    assert unavailable_response.json()["action_result"]["retry_allowed"] is True
+    assert malformed_response.status_code == 200
+    assert malformed_response.json()["run_state"] == "failed_terminal"
+    assert malformed_response.json()["action_result"]["execution_status"] == "failed_terminal"
+    assert malformed_response.json()["action_result"]["terminal_errors"][0]["code"] == "malformed_app_action_result"
+    assert unsafe_response.status_code == 200
+    assert unsafe_response.json()["run_state"] == "failed_terminal"
+    assert unsafe_response.json()["action_result"]["execution_status"] == "failed_terminal"
+    assert unsafe_response.json()["action_result"]["terminal_errors"][0]["code"] == "unsafe_app_action_result"
     assert "private\\raw.csv" not in unsafe_response.text
+    for runtime in [app_unavailable_runtime, malformed_runtime, unsafe_runtime]:
+        entry = runtime.planner.ledger.list_entries()[0]
+        runtime.contract_loader.validate_agent_contract_payload(
+            entry.action_results[0],
+            "agent_action_result.v1.schema.json",
+        )
+        runtime.contract_loader.validate_agent_contract_payload(
+            entry.model_dump(mode="json"),
+            "agent_execution_ledger.v1.schema.json",
+        )
+
+
+def test_execution_duplicate_after_failure_returns_existing_failure_without_calling_app_again() -> None:
+    app_client = FakePreflightAppClient(
+        execution_error=AppClientError("Quant Studio execution app is unavailable.", status_code=503)
+    )
+    runtime = runtime_with_preflight_client(app_client)
+    client = TestClient(create_app(runtime))
+    plan_payload, studio_step, _preview_payload = _create_confirmed_studio_preview(client)
+    request = {"run_id": plan_payload["run_id"], "step_id": studio_step["step_id"]}
+
+    first = client.post("/executions", json=request)
+    second = client.post("/executions", json=request)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["action_result"] == first.json()["action_result"]
+    assert len(app_client.execution_calls) == 1
+    entry = runtime.planner.ledger.list_entries()[0]
+    assert len(entry.action_results) == 1
+
+
+def test_cancellation_is_ledgered_idempotent_and_blocks_further_actions() -> None:
+    runtime = runtime_with_preflight_client(FakePreflightAppClient())
+    client = TestClient(create_app(runtime))
+    plan_payload = _create_plan_with_lifecycle_reference(client)
+    source_step = next(
+        step
+        for step in plan_payload["plan"]["proposed_steps"]
+        if step["capability_id"] == "quant_data.run_source_preflight"
+    )
+    studio_step = next(
+        step
+        for step in plan_payload["plan"]["proposed_steps"]
+        if step["capability_id"] == "quant_studio.prepare_model_config_draft"
+    )
+
+    first = client.post(
+        "/cancellations",
+        json={
+            "run_id": plan_payload["run_id"],
+            "cancellation_intent": "cancel_run",
+            "reason": "user_cancelled",
+        },
+    )
+    second = client.post(
+        "/cancellations",
+        json={
+            "run_id": plan_payload["run_id"],
+            "cancellation_intent": "cancel_run",
+            "reason": "user_cancelled",
+        },
+    )
+    status = client.get(f"/runs/{plan_payload['run_id']}")
+    preflight = client.post(
+        "/preflights",
+        json={"run_id": plan_payload["run_id"], "step_id": source_step["step_id"]},
+    )
+    confirmation = client.post(
+        "/confirmations",
+        json={
+            "run_id": plan_payload["run_id"],
+            "step_id": studio_step["step_id"],
+            "confirmation_intent": "approve_plan_step",
+        },
+    )
+    action_request = client.post(
+        "/action-requests",
+        json={"run_id": plan_payload["run_id"], "step_id": studio_step["step_id"]},
+    )
+    execution = client.post(
+        "/executions",
+        json={"run_id": plan_payload["run_id"], "step_id": studio_step["step_id"]},
+    )
+
+    assert first.status_code == 200
+    assert first.json()["run_state"] == "cancelled"
+    assert first.json()["final_status"] == "cancelled"
+    assert first.json()["cancellation"]["status"] == "cancelled"
+    assert first.json()["cancellation"]["execution_permitted"] is False
+    assert second.status_code == 200
+    assert second.json()["cancellation"] == first.json()["cancellation"]
+    assert status.status_code == 200
+    assert status.json()["run_state"] == "cancelled"
+    assert status.json()["latest_cancellation"] == first.json()["cancellation"]
+    assert status.json()["allowed_next_actions"] == []
+    assert preflight.status_code == 422
+    assert preflight.json()["detail"]["errors"][0]["code"] == "cancelled_run_preflight"
+    assert confirmation.status_code == 422
+    assert confirmation.json()["detail"]["errors"][0]["code"] == "cancelled_run_confirmation"
+    assert action_request.status_code == 422
+    assert action_request.json()["detail"]["errors"][0]["code"] == "cancelled_run_action_request"
+    assert execution.status_code == 422
+    assert execution.json()["detail"]["errors"][0]["code"] == "cancelled_run_execution"
+    entry = runtime.planner.ledger.list_entries()[0]
+    assert len(entry.cancellation_events) == 1
+    runtime.contract_loader.validate_agent_contract_payload(
+        entry.model_dump(mode="json"),
+        "agent_execution_ledger.v1.schema.json",
+    )
+
+
+def test_cancellation_rejects_unknown_terminal_and_unsafe_runs() -> None:
+    completed_runtime = runtime_with_preflight_client(
+        FakePreflightAppClient(
+            responses_by_capability={
+                "quant_monitoring.validate_bundle": _valid_preflight_response(
+                    capability_id="quant_monitoring.validate_bundle",
+                    app_id="quant_monitoring",
+                )
+            }
+        )
+    )
+    completed_api = TestClient(create_app(completed_runtime))
+    completed_plan, completed_step, _preview = _create_confirmed_studio_preview(completed_api)
+    assert completed_api.post(
+        "/executions",
+        json={"run_id": completed_plan["run_id"], "step_id": completed_step["step_id"]},
+    ).status_code == 200
+    _complete_documentation_step(completed_api, completed_plan)
+    completed_monitoring_step = _step_for_capability(
+        completed_plan,
+        "quant_monitoring.validate_bundle",
+    )
+    assert completed_api.post(
+        "/preflights",
+        json={
+            "run_id": completed_plan["run_id"],
+            "step_id": completed_monitoring_step["step_id"],
+        },
+    ).status_code == 200
+
+    terminal_client = FakePreflightAppClient(execution_response=_valid_action_result("failed_terminal"))
+    terminal_runtime = runtime_with_preflight_client(terminal_client)
+    terminal_api = TestClient(create_app(terminal_runtime))
+    terminal_plan, terminal_step, _terminal_preview = _create_confirmed_studio_preview(terminal_api)
+    assert terminal_api.post(
+        "/executions",
+        json={"run_id": terminal_plan["run_id"], "step_id": terminal_step["step_id"]},
+    ).status_code == 200
+
+    recoverable_client = FakePreflightAppClient(
+        execution_error=AppClientError("Quant Studio execution app is unavailable.", status_code=503)
+    )
+    recoverable_runtime = runtime_with_preflight_client(recoverable_client)
+    recoverable_api = TestClient(create_app(recoverable_runtime))
+    recoverable_plan, recoverable_step, _recoverable_preview = _create_confirmed_studio_preview(
+        recoverable_api
+    )
+    assert recoverable_api.post(
+        "/executions",
+        json={"run_id": recoverable_plan["run_id"], "step_id": recoverable_step["step_id"]},
+    ).status_code == 200
+
+    unknown = completed_api.post(
+        "/cancellations",
+        json={
+            "run_id": "run_missing",
+            "cancellation_intent": "cancel_run",
+            "reason": "user_cancelled",
+        },
+    )
+    completed = completed_api.post(
+        "/cancellations",
+        json={
+            "run_id": completed_plan["run_id"],
+            "cancellation_intent": "cancel_run",
+            "reason": "user_cancelled",
+        },
+    )
+    terminal = terminal_api.post(
+        "/cancellations",
+        json={
+            "run_id": terminal_plan["run_id"],
+            "cancellation_intent": "cancel_run",
+            "reason": "user_cancelled",
+        },
+    )
+    unsafe = recoverable_api.post(
+        "/cancellations",
+        json={
+            "run_id": recoverable_plan["run_id"],
+            "cancellation_intent": "cancel_run",
+            "reason": "C:\\Users\\matth\\Desktop\\private\\raw.csv",
+        },
+    )
+    recoverable = recoverable_api.post(
+        "/cancellations",
+        json={
+            "run_id": recoverable_plan["run_id"],
+            "cancellation_intent": "cancel_run",
+            "reason": "user_cancelled",
+        },
+    )
+
+    assert unknown.status_code == 422
+    assert unknown.json()["detail"]["errors"][0]["code"] == "unknown_run"
+    assert completed.status_code == 422
+    assert completed.json()["detail"]["errors"][0]["code"] == "terminal_run_cancellation"
+    assert terminal.status_code == 422
+    assert terminal.json()["detail"]["errors"][0]["code"] == "terminal_run_cancellation"
+    assert unsafe.status_code == 422
+    assert unsafe.json()["detail"]["errors"][0]["code"] == "unsafe_cancellation_record"
+    assert "private\\raw.csv" not in unsafe.text
+    assert recoverable.status_code == 200
+    assert recoverable.json()["run_state"] == "cancelled"
 
 
 def test_action_request_rejects_unknown_run_unknown_step_and_browser_action_payload() -> None:
@@ -1258,6 +2200,7 @@ def test_action_request_rejects_unknown_run_unknown_step_and_browser_action_payl
 def test_action_request_rejects_missing_lifecycle_preflight_confirmation_and_blocked_plan() -> None:
     client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
     plan_payload = _create_plan(client)
+    _advance_to_studio_step(client, plan_payload)
     studio_step = next(
         step
         for step in plan_payload["plan"]["proposed_steps"]
@@ -1307,10 +2250,10 @@ def test_action_request_rejects_missing_lifecycle_preflight_confirmation_and_blo
     assert missing_lifecycle.status_code == 422
     assert missing_lifecycle.json()["detail"]["errors"][0]["code"] == "missing_lifecycle_state_reference"
     assert missing_preflight.status_code == 422
-    assert missing_preflight.json()["detail"]["errors"][0]["code"] == "missing_preflight_for_action_request"
+    assert missing_preflight.json()["detail"]["errors"][0]["code"] == "orchestration_action_not_allowed"
     assert missing_confirmation.status_code == 422
     assert missing_confirmation.json()["detail"]["errors"][0]["code"] == (
-        "missing_confirmation_for_action_request"
+        "orchestration_step_not_ready"
     )
     assert blocked_preview.status_code == 422
     assert blocked_preview.json()["detail"]["errors"][0]["code"] == "blocked_plan_action_request"
@@ -1343,6 +2286,7 @@ def test_action_request_rejects_blocked_preflight_stale_capability_unsafe_input_
     stale_runtime = runtime_with_preflight_client(FakePreflightAppClient())
     stale_client = TestClient(create_app(stale_runtime))
     stale_payload = _create_plan_with_lifecycle_reference(stale_client)
+    _advance_to_studio_step(stale_client, stale_payload)
     stale_studio_step = next(
         step
         for step in stale_payload["plan"]["proposed_steps"]
@@ -1366,6 +2310,7 @@ def test_action_request_rejects_blocked_preflight_stale_capability_unsafe_input_
     unsafe_runtime = runtime_with_preflight_client(FakePreflightAppClient())
     unsafe_client = TestClient(create_app(unsafe_runtime))
     unsafe_payload = _create_plan_with_lifecycle_reference(unsafe_client)
+    _advance_to_studio_step(unsafe_client, unsafe_payload)
     unsafe_studio_step = next(
         step
         for step in unsafe_payload["plan"]["proposed_steps"]
@@ -1390,6 +2335,7 @@ def test_action_request_rejects_blocked_preflight_stale_capability_unsafe_input_
     malformed_runtime = runtime_with_preflight_client(FakePreflightAppClient())
     malformed_client = TestClient(create_app(malformed_runtime))
     malformed_payload = _create_plan_with_lifecycle_reference(malformed_client)
+    _advance_to_studio_step(malformed_client, malformed_payload)
     malformed_studio_step = next(
         step
         for step in malformed_payload["plan"]["proposed_steps"]
@@ -1435,6 +2381,7 @@ def test_action_request_rejects_blocked_preflight_stale_capability_unsafe_input_
 def test_confirmation_rejects_duplicate_confirmation() -> None:
     client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
     plan_payload = _create_plan(client)
+    _advance_to_studio_step(client, plan_payload)
     studio_step = next(
         step
         for step in plan_payload["plan"]["proposed_steps"]
@@ -1865,7 +2812,8 @@ def test_preflight_rejects_malformed_app_response() -> None:
 def test_preflight_rejects_app_capability_mismatch() -> None:
     app_client = FakePreflightAppClient(response=_valid_preflight_response())
     client = TestClient(create_app(runtime_with_preflight_client(app_client)))
-    plan_payload = _create_plan(client)
+    plan_payload = _create_plan_with_lifecycle_reference(client)
+    _advance_to_monitoring_step(client, plan_payload)
     monitoring_step = next(
         step
         for step in plan_payload["plan"]["proposed_steps"]
@@ -1900,7 +2848,7 @@ def test_preflight_rejects_unsafe_app_response() -> None:
 
 
 def test_unsupported_provider_mode_is_rejected_before_planning() -> None:
-    client = TestClient(create_app())
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
 
     response = client.post(
         "/plans",
