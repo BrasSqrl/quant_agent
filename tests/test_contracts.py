@@ -185,6 +185,59 @@ def test_fake_provider_plan_validates_against_agent_plan_contract() -> None:
         "quant_monitoring",
     ]
     validate_against_contract(plan, "agent_plan.v1.schema.json")
+    validate_against_contract(
+        response.json()["context_preview"],
+        "assistant_context_preview.v1.schema.json",
+    )
+
+
+def test_plan_context_preview_omits_unsafe_request_context() -> None:
+    runtime = runtime_with_loader(QuantSuiteContractLoader(QUANT_SUITE_ROOT))
+    client = TestClient(create_app(runtime))
+
+    response = client.post(
+        "/plans",
+        json={
+            "user_goal": "Build a conservative PD scorecard plan.",
+            "context_summary": {
+                "source_summary": "Development sample is registered.",
+                "target_summary": "Default flag is the candidate target.",
+                "package_summary": "Documentation package is ready.",
+                "bundle_summary": "Monitoring bundle is ready.",
+                "links": [{"frontend_url": "http://127.0.0.1:5810/?query=raw"}],
+                "query": {"run_id": "raw-route-query"},
+                "records": [{"borrower_id": "A12345"}],
+                "raw_path": "C:\\Users\\matth\\Desktop\\private\\raw.csv",
+                "bucket_name": "private-bucket",
+                "hidden_commands": ["rm -rf ."],
+                "safe_note": "Open http://127.0.0.1:5810/?secret=value after review.",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    preview = response.json()["context_preview"]
+    dumped_preview = str(preview)
+    assert "links" not in preview["context"]
+    assert "query" not in preview["context"]
+    assert "records" not in preview["context"]
+    assert "raw_path" not in preview["context"]
+    assert "bucket_name" not in preview["context"]
+    assert "hidden_commands" not in preview["context"]
+    assert preview["context"]["safe_note"] == "Open [redacted] after review."
+    assert "records" in preview["omitted_row_level_fields"]
+    assert "links" in preview["omitted_sensitive_fields"]
+    assert "query" in preview["omitted_sensitive_fields"]
+    assert "raw_path" in preview["omitted_sensitive_fields"]
+    assert "bucket_name" in preview["omitted_sensitive_fields"]
+    assert "hidden_commands" in preview["omitted_sensitive_fields"]
+    assert "safe_note" in preview["omitted_sensitive_fields"]
+    assert "A12345" not in dumped_preview
+    assert "private-bucket" not in dumped_preview
+    assert "rm -rf" not in dumped_preview
+    assert "C:\\Users\\matth\\Desktop\\private\\raw.csv" not in dumped_preview
+    assert "http://127.0.0.1:5810" not in dumped_preview
+    validate_against_contract(preview, "assistant_context_preview.v1.schema.json")
 
 
 def test_missing_context_fields_still_produce_schema_valid_blocked_plan() -> None:
@@ -224,6 +277,11 @@ def test_ledger_entry_validates_against_agent_execution_ledger_contract() -> Non
     )
 
     entry = planner.ledger.list_entries()[0].model_dump(mode="json")
+    assert entry["context_preview"]["context"]["source_summary"] == "Source summary only."
+    validate_against_contract(
+        entry["context_preview"],
+        "assistant_context_preview.v1.schema.json",
+    )
     validate_against_contract(entry, "agent_execution_ledger.v1.schema.json")
 
 
@@ -242,4 +300,8 @@ def test_policy_rejection_ledger_validates_against_agent_execution_ledger_contra
     entry = planner.ledger.list_entries()[0].model_dump(mode="json")
     assert entry["validation_results"]["status"] == "rejected"
     assert entry["policy_rejections"]
+    validate_against_contract(
+        entry["context_preview"],
+        "assistant_context_preview.v1.schema.json",
+    )
     validate_against_contract(entry, "agent_execution_ledger.v1.schema.json")

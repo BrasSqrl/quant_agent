@@ -108,6 +108,24 @@ def test_context_builder_builds_required_summaries_from_credit_fixture() -> None
     assert availability["quant_monitoring"]["summary_count"] == 3
 
 
+def test_context_builder_preview_validates_against_contract() -> None:
+    builder = LifecycleContextBuilder()
+    result = builder.build_result_from_path(LIFECYCLE_FIXTURE_PATH)
+    preview = result.context_preview.model_dump(mode="json")
+
+    assert result.context_summary == builder.build_from_path(LIFECYCLE_FIXTURE_PATH)
+    assert preview["data_policy"] == "summaries_only"
+    assert preview["row_level_data_included"] is False
+    assert preview["context_char_count"] > 0
+    assert "Lifecycle: Credit Risk PD Scorecard" in preview["context_sources"]
+    assert "quant_data source_reference: Credit PD panel sample source" in preview[
+        "context_sources"
+    ]
+    assert "links" in preview["omitted_sensitive_fields"]
+    assert any(field.endswith("query") for field in preview["omitted_sensitive_fields"])
+    validate_against_contract(preview, "assistant_context_preview.v1.schema.json")
+
+
 def test_context_builder_omits_queries_links_raw_records_and_hidden_commands() -> None:
     manifest = copy.deepcopy(load_lifecycle_fixture())
     source_reference = manifest["source_references"][0]
@@ -123,8 +141,11 @@ def test_context_builder_omits_queries_links_raw_records_and_hidden_commands() -
         "s3://private-bucket/raw.csv."
     )
 
-    context = LifecycleContextBuilder().build_from_manifest(manifest)
+    result = LifecycleContextBuilder().build_result_from_manifest(manifest)
+    context = result.context_summary
     dumped = json.dumps(context, sort_keys=True)
+    preview = result.context_preview.model_dump(mode="json")
+    dumped_preview = json.dumps(preview, sort_keys=True)
 
     assert '"links"' not in dumped
     assert '"query"' not in dumped
@@ -138,12 +159,26 @@ def test_context_builder_omits_queries_links_raw_records_and_hidden_commands() -
     assert "C:\\Users\\matth\\Desktop\\private\\raw.csv" not in dumped
     assert "s3://private-bucket/raw.csv" not in dumped
     assert "[redacted]" in dumped
+    assert "source_references.records" in preview["omitted_row_level_fields"]
+    assert "links" in preview["omitted_sensitive_fields"]
+    assert "source_references.query" in preview["omitted_sensitive_fields"]
+    assert "source_references.raw_path" in preview["omitted_sensitive_fields"]
+    assert "source_references.bucket_name" in preview["omitted_sensitive_fields"]
+    assert "source_references.hidden_commands" in preview["omitted_sensitive_fields"]
+    assert "do-not-leak" not in dumped_preview
+    assert "A12345" not in dumped_preview
+    assert "private-bucket" not in dumped_preview
+    assert "rm -rf" not in dumped_preview
+    assert "C:\\Users\\matth\\Desktop\\private\\raw.csv" not in dumped_preview
+    assert "s3://private-bucket/raw.csv" not in dumped_preview
+    validate_against_contract(preview, "assistant_context_preview.v1.schema.json")
 
 
 def test_lifecycle_context_produces_valid_plan_and_safe_ledger() -> None:
     runtime = runtime_with_canonical_capabilities()
     client = TestClient(create_app(runtime))
-    context = LifecycleContextBuilder().build_from_path(LIFECYCLE_FIXTURE_PATH)
+    context_result = LifecycleContextBuilder().build_result_from_path(LIFECYCLE_FIXTURE_PATH)
+    context = context_result.context_summary
 
     response = client.post(
         "/plans",
@@ -169,11 +204,21 @@ def test_lifecycle_context_produces_valid_plan_and_safe_ledger() -> None:
     } == {"quant_studio.prepare_model_config_draft"}
 
     validate_against_contract(payload["plan"], "agent_plan.v1.schema.json")
+    validate_against_contract(
+        context_result.context_preview.model_dump(mode="json"),
+        "assistant_context_preview.v1.schema.json",
+    )
+    assert payload["context_preview"]["context"] == context
+    validate_against_contract(payload["context_preview"], "assistant_context_preview.v1.schema.json")
 
     ledger_entries = runtime.planner.ledger.list_entries()
     assert len(ledger_entries) == 1
     ledger_entry = ledger_entries[0].model_dump(mode="json")
     validate_against_contract(ledger_entry, "agent_execution_ledger.v1.schema.json")
+    validate_against_contract(
+        ledger_entry["context_preview"],
+        "assistant_context_preview.v1.schema.json",
+    )
     dumped_ledger = json.dumps(ledger_entry, sort_keys=True)
     assert '"query"' not in dumped_ledger
     assert '"links"' not in dumped_ledger

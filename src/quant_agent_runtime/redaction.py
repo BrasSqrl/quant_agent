@@ -35,11 +35,20 @@ UNSAFE_KEYS = {
     "shell_command",
     "provider_prompt",
     "provider_response",
+    "link",
+    "links",
+    "query",
+    "queries",
+    "frontend_url",
+    "frontend_urls",
+    "url",
+    "urls",
 }
 
 UNSAFE_VALUE_PATTERNS = [
     re.compile(r"\b[A-Za-z]:[\\/][^\s]+"),
     re.compile(r"\bs3://[^\s]+", re.IGNORECASE),
+    re.compile(r"\bhttps?://[^\s]+", re.IGNORECASE),
 ]
 
 

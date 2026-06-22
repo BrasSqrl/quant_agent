@@ -5,6 +5,9 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from quant_agent_runtime.context_preview import build_context_preview, inspect_context_omissions
+from quant_agent_runtime.models import ContextBuildResult
+from quant_agent_runtime.redaction import merge_redaction_summaries
 from quant_agent_runtime.redaction import sanitize_value
 
 
@@ -12,14 +15,41 @@ class LifecycleContextBuilder:
     """Build safe planner context from lifecycle manifests."""
 
     def build_from_path(self, manifest_path: str | Path) -> dict[str, object]:
+        return self.build_result_from_path(manifest_path).context_summary
+
+    def build_result_from_path(self, manifest_path: str | Path) -> ContextBuildResult:
+        return self.build_result_from_manifest(self._load_manifest(manifest_path))
+
+    def build_from_manifest(self, manifest: Mapping[str, Any]) -> dict[str, object]:
+        return self.build_result_from_manifest(manifest).context_summary
+
+    def build_result_from_manifest(self, manifest: Mapping[str, Any]) -> ContextBuildResult:
+        context = self._build_context(manifest)
+        sanitized, context_redaction = sanitize_value(context, path="lifecycle_context")
+        if not isinstance(sanitized, dict):
+            raise ValueError("Lifecycle context builder produced invalid context.")
+        manifest_redaction = inspect_context_omissions(manifest, root="lifecycle_manifest")
+        redaction_summary = merge_redaction_summaries(manifest_redaction, context_redaction)
+        context_preview = build_context_preview(
+            sanitized,
+            redaction_summary=redaction_summary,
+            context_sources=self._build_context_sources(manifest),
+            warnings=self._build_warnings(manifest),
+        )
+        return ContextBuildResult(
+            context_summary=sanitized,
+            context_preview=context_preview,
+        )
+
+    def _load_manifest(self, manifest_path: str | Path) -> dict[str, Any]:
         path = Path(manifest_path)
         with path.open("r", encoding="utf-8") as handle:
             manifest = json.load(handle)
         if not isinstance(manifest, dict):
             raise ValueError("Lifecycle manifest must be a JSON object.")
-        return self.build_from_manifest(manifest)
+        return manifest
 
-    def build_from_manifest(self, manifest: Mapping[str, Any]) -> dict[str, object]:
+    def _build_context(self, manifest: Mapping[str, Any]) -> dict[str, object]:
         context: dict[str, object] = {
             "lifecycle_summary": self._build_lifecycle_summary(manifest),
             "source_summary": self._build_collection_summary(
@@ -41,10 +71,7 @@ class LifecycleContextBuilder:
             ),
             "app_availability": self._build_app_availability(manifest),
         }
-        sanitized, _ = sanitize_value(context, path="lifecycle_context")
-        if not isinstance(sanitized, dict):
-            raise ValueError("Lifecycle context builder produced invalid context.")
-        return sanitized
+        return context
 
     def _build_lifecycle_summary(self, manifest: Mapping[str, Any]) -> str:
         parts: list[str] = []
@@ -179,6 +206,74 @@ class LifecycleContextBuilder:
                 count += sum(1 for item in collection if isinstance(item, Mapping))
         return count
 
+    def _build_context_sources(self, manifest: Mapping[str, Any]) -> list[str]:
+        sources: list[str] = []
+        lifecycle_label = self._safe_scalar(manifest.get("lifecycle_label"))
+        if lifecycle_label:
+            sources.append(f"Lifecycle: {lifecycle_label}")
+
+        for collection_name in (
+            "source_references",
+            "eda_packages",
+            "studio_runs",
+            "documentation_packages",
+            "documentation_drafts",
+            "monitoring_bundles",
+            "monitoring_runs",
+            "feedback_signals",
+        ):
+            collection = manifest.get(collection_name)
+            if not isinstance(collection, list):
+                continue
+            for item in collection:
+                if isinstance(item, Mapping):
+                    source = self._source_label(item)
+                    if source:
+                        sources.append(source)
+
+        champion_model = manifest.get("champion_model")
+        if isinstance(champion_model, Mapping):
+            source = self._source_label(champion_model)
+            if source:
+                sources.append(source)
+
+        sanitized_sources, _ = sanitize_value(self._dedupe(sources), path="context_sources")
+        if isinstance(sanitized_sources, list):
+            return [item for item in sanitized_sources if isinstance(item, str)]
+        return []
+
+    def _source_label(self, item: Mapping[str, Any]) -> str:
+        label = self._safe_scalar(item.get("label"))
+        reference_type = self._safe_scalar(item.get("reference_type"))
+        app = self._safe_scalar(item.get("app"))
+        if label and app and reference_type:
+            return f"{app} {reference_type}: {label}"
+        if label and app:
+            return f"{app}: {label}"
+        return label
+
+    def _build_warnings(self, manifest: Mapping[str, Any]) -> list[str]:
+        warnings = manifest.get("warnings")
+        if not isinstance(warnings, list):
+            return []
+        safe_warnings = [self._safe_scalar(item) for item in warnings]
+        sanitized_warnings, _ = sanitize_value(
+            [item for item in safe_warnings if item],
+            path="context_warnings",
+        )
+        if isinstance(sanitized_warnings, list):
+            return [item for item in sanitized_warnings if isinstance(item, str)]
+        return []
+
+    def _dedupe(self, values: list[str]) -> list[str]:
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for value in values:
+            if value and value not in seen:
+                seen.add(value)
+                deduped.append(value)
+        return deduped
+
     def _safe_scalar(self, value: Any) -> str:
         if isinstance(value, str):
             return " ".join(value.strip().split())
@@ -193,3 +288,11 @@ def build_lifecycle_context_summary(manifest: Mapping[str, Any]) -> dict[str, ob
 
 def build_lifecycle_context_summary_from_path(manifest_path: str | Path) -> dict[str, object]:
     return LifecycleContextBuilder().build_from_path(manifest_path)
+
+
+def build_lifecycle_context_result(manifest: Mapping[str, Any]) -> ContextBuildResult:
+    return LifecycleContextBuilder().build_result_from_manifest(manifest)
+
+
+def build_lifecycle_context_result_from_path(manifest_path: str | Path) -> ContextBuildResult:
+    return LifecycleContextBuilder().build_result_from_path(manifest_path)

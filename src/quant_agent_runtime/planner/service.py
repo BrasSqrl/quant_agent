@@ -5,11 +5,13 @@ from uuid import uuid4
 from pydantic import ValidationError
 
 from quant_agent_runtime.capabilities import CapabilityRegistry
+from quant_agent_runtime.context_preview import build_context_preview
 from quant_agent_runtime.ledger import InMemoryLedger
 from quant_agent_runtime.model_gateway import ModelProvider, ProviderPlanRequest
 from quant_agent_runtime.models import (
     CapabilityDefinition,
     ConfirmationRequirement,
+    ContextPreview,
     LedgerEntry,
     PlanRequest,
     PlanResult,
@@ -60,6 +62,12 @@ class PlannerService:
             request.context_summary,
             path="context_summary",
         )
+        if not isinstance(safe_context, dict):
+            safe_context = {}
+        context_preview = build_context_preview(
+            safe_context,
+            redaction_summary=context_redaction,
+        )
         redaction_summary = merge_redaction_summaries(goal_redaction, context_redaction)
 
         registry = CapabilityRegistry.from_request(
@@ -85,6 +93,7 @@ class PlannerService:
                 safe_goal=safe_goal,
                 provider_metadata=provider_metadata,
                 redaction_summary=redaction_summary,
+                context_preview=context_preview,
                 validation=error.validation,
             )
             raise error from exc
@@ -96,6 +105,7 @@ class PlannerService:
                 safe_goal=safe_goal,
                 provider_metadata=provider_metadata,
                 redaction_summary=redaction_summary,
+                context_preview=context_preview,
                 validation=validation,
             )
             raise RuntimeValidationError(validation)
@@ -107,6 +117,7 @@ class PlannerService:
             provider_mode=provider_metadata.provider_mode,
             provider_metadata=provider_metadata,
             redaction_summary=redaction_summary,
+            context_preview=context_preview,
             plan_snapshot=structured_plan.model_dump(mode="json"),
             validation_results=validation,
             policy_rejections=[],
@@ -117,6 +128,7 @@ class PlannerService:
             run_id=run_id,
             provider_metadata=provider_metadata,
             redaction_summary=redaction_summary,
+            context_preview=context_preview,
             plan=structured_plan,
             validation=validation,
             ledger_recorded=True,
@@ -157,6 +169,7 @@ class PlannerService:
         safe_goal: str,
         provider_metadata: ProviderMetadata | None,
         redaction_summary: RedactionSummary,
+        context_preview: ContextPreview,
         validation: PlanValidationResult,
     ) -> None:
         provider_mode = (
@@ -182,6 +195,7 @@ class PlannerService:
             provider_mode=provider_mode,
             provider_metadata=provider_metadata,
             redaction_summary=redaction_summary,
+            context_preview=context_preview,
             plan_snapshot=None,
             validation_results=validation,
             policy_rejections=policy_rejections,

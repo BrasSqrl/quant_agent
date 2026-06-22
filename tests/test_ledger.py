@@ -31,4 +31,5 @@ def test_ledger_entries_are_safe_and_omit_raw_unsafe_fields() -> None:
     assert "private-bucket" not in dumped
     assert "rm -rf" not in dumped
     assert "C:\\Users\\me\\secret.csv" not in dumped
+    assert "hidden_commands" in entry.context_preview.omitted_sensitive_fields
     assert "provider_prompt" not in dumped

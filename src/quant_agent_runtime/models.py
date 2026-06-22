@@ -86,6 +86,22 @@ class RedactionSummary(StrictModel):
     redacted_fields: list[str] = Field(default_factory=list)
 
 
+class ContextPreview(StrictModel):
+    context: dict[str, Any] = Field(default_factory=dict)
+    context_sources: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    omitted_sensitive_fields: list[str] = Field(default_factory=list)
+    omitted_row_level_fields: list[str] = Field(default_factory=list)
+    context_char_count: int = 0
+    data_policy: Literal["summaries_only"] = "summaries_only"
+    row_level_data_included: Literal[False] = False
+
+
+class ContextBuildResult(StrictModel):
+    context_summary: dict[str, Any]
+    context_preview: ContextPreview
+
+
 class ProviderMetadata(StrictModel):
     provider: str
     model: str
@@ -150,6 +166,7 @@ class PlanResult(StrictModel):
     run_id: str
     provider_metadata: ProviderMetadata
     redaction_summary: RedactionSummary
+    context_preview: ContextPreview
     plan: StructuredPlan
     validation: PlanValidationResult
     ledger_recorded: bool
@@ -161,6 +178,7 @@ class LedgerEntry(StrictModel):
     provider_mode: ProviderMode
     provider_metadata: ProviderMetadata | None = None
     redaction_summary: RedactionSummary
+    context_preview: ContextPreview | None = None
     plan_snapshot: dict[str, Any] | None = None
     validation_results: PlanValidationResult
     policy_rejections: list[ValidationIssue] = Field(default_factory=list)
