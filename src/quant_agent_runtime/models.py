@@ -198,6 +198,8 @@ class PlanResult(StrictModel):
 
 
 class LedgerEntry(StrictModel):
+    schema_version: str = "1.0"
+    data_policy: Literal["summaries_and_references_only"] = "summaries_and_references_only"
     run_id: str
     user_goal_summary: str
     provider_mode: ProviderMode
@@ -205,8 +207,17 @@ class LedgerEntry(StrictModel):
     redaction_summary: RedactionSummary
     context_preview: ContextPreview | None = None
     plan_snapshot: dict[str, Any] | None = None
+    capability_snapshot: list[dict[str, Any]] = Field(default_factory=list)
+    preflight_records: list[dict[str, Any]] = Field(default_factory=list)
+    confirmation_records: list[dict[str, Any]] = Field(default_factory=list)
+    action_requests: list[dict[str, Any]] = Field(default_factory=list)
+    action_results: list[dict[str, Any]] = Field(default_factory=list)
     validation_results: PlanValidationResult
     policy_rejections: list[ValidationIssue] = Field(default_factory=list)
+    recovery_events: list[dict[str, Any]] = Field(default_factory=list)
+    cancellation_events: list[dict[str, Any]] = Field(default_factory=list)
+    final_status: str = "planned"
+    safe_artifact_map: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class RuntimeManifest(StrictModel):

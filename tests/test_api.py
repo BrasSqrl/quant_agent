@@ -95,6 +95,8 @@ def test_no_execution_endpoint_exists() -> None:
 
     assert client.post("/runs", json={}).status_code == 404
     assert client.post("/execute", json={}).status_code == 404
+    assert client.post("/preflight", json={}).status_code == 404
+    assert client.post("/runtime/preflight", json={}).status_code == 404
 
 
 def test_unsupported_provider_mode_is_rejected_before_planning() -> None:

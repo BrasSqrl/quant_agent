@@ -1,4 +1,7 @@
 TEMPORARY_AGENT_CONTRACT_FIXTURES = [
+    "internal.agent_action_preflight.v0",
+    "internal.agent_action_request.v0",
+    "internal.agent_action_result.v0",
     "internal.agent_capability.v0",
     "internal.agent_plan.v0",
     "internal.agent_policy.v0",

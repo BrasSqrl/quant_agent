@@ -11,7 +11,14 @@ from quant_agent_runtime.capabilities import default_capabilities
 from quant_agent_runtime.contracts import QuantSuiteContractLoader
 from quant_agent_runtime.ledger import InMemoryLedger
 from quant_agent_runtime.model_gateway import FakePlanProvider, ModelProvider, ProviderPlanRequest, ProviderResult
-from quant_agent_runtime.models import PlanRequest, ProviderMetadata, ProviderMode
+from quant_agent_runtime.models import (
+    LedgerEntry,
+    PlanRequest,
+    PlanValidationResult,
+    ProviderMetadata,
+    ProviderMode,
+    RedactionSummary,
+)
 from quant_agent_runtime.planner import PlannerService
 from quant_agent_runtime.runtime import RuntimeContainer
 from quant_agent_runtime.validation.errors import RuntimeValidationError
@@ -21,6 +28,9 @@ AGENT_ROOT = Path(__file__).resolve().parents[1]
 QUANT_SUITE_ROOT = AGENT_ROOT.parent / "quant_suite"
 CONTRACTS_DIR = QUANT_SUITE_ROOT / "contracts"
 EXPECTED_AGENT_CONTRACTS = {
+    "agent_action_preflight.v1.schema.json",
+    "agent_action_request.v1.schema.json",
+    "agent_action_result.v1.schema.json",
     "agent_capability.v1.schema.json",
     "agent_execution_ledger.v1.schema.json",
     "agent_plan.v1.schema.json",
@@ -28,6 +38,12 @@ EXPECTED_AGENT_CONTRACTS = {
     "agent_provider_config.v1.schema.json",
     "agent_runtime_manifest.v1.schema.json",
 }
+PHASE3_AGENT_EXAMPLES = [
+    ("agent_action_preflight.v1.example.json", "agent_action_preflight.v1.schema.json"),
+    ("agent_action_request.v1.example.json", "agent_action_request.v1.schema.json"),
+    ("agent_action_result.v1.example.json", "agent_action_result.v1.schema.json"),
+    ("agent_execution_ledger.v1.example.json", "agent_execution_ledger.v1.schema.json"),
+]
 
 
 class StaticProvider(ModelProvider):
@@ -93,6 +109,13 @@ def validate_against_contract(payload: object, schema_name: str) -> None:
     validator.validate_schema(payload, schema)
 
 
+def load_contract_example(example_name: str) -> object:
+    example_path = CONTRACTS_DIR / example_name
+    if not example_path.is_file():
+        pytest.fail(f"Expected canonical example was not found: {example_path}")
+    return load_suite_validator().load_json(example_path)
+
+
 def runtime_with_loader(loader: QuantSuiteContractLoader) -> RuntimeContainer:
     capabilities = loader.load_agent_capabilities()
     provider_status = loader.load_agent_provider_status()
@@ -112,6 +135,14 @@ def test_canonical_agent_contracts_are_discovered_from_quant_suite() -> None:
 
     assert result.canonical_agent_contracts_loaded is True
     assert EXPECTED_AGENT_CONTRACTS.issubset(set(result.loaded_agent_contracts))
+
+
+@pytest.mark.parametrize(("example_name", "schema_name"), PHASE3_AGENT_EXAMPLES)
+def test_phase3_agent_examples_validate_against_canonical_contracts(
+    example_name: str,
+    schema_name: str,
+) -> None:
+    validate_against_contract(load_contract_example(example_name), schema_name)
 
 
 def test_canonical_capability_example_is_loaded_and_mapped() -> None:
@@ -360,6 +391,54 @@ def test_ledger_entry_validates_against_agent_execution_ledger_contract() -> Non
         "assistant_context_preview.v1.schema.json",
     )
     validate_against_contract(entry, "agent_execution_ledger.v1.schema.json")
+
+
+def test_ledger_with_preflight_action_and_result_sections_validates() -> None:
+    action_request = load_contract_example("agent_action_request.v1.example.json")
+    preflight_record = load_contract_example("agent_action_preflight.v1.example.json")
+    action_result = load_contract_example("agent_action_result.v1.example.json")
+    entry = LedgerEntry(
+        run_id="run_plan_only_contract_sections",
+        user_goal_summary="Validate safe plan-only ledger sections.",
+        provider_mode=ProviderMode.disabled_or_local_fallback,
+        redaction_summary=RedactionSummary(),
+        plan_snapshot={
+            "plan_id": "plan_contract_sections",
+            "status": "blocked",
+            "execution_permitted": False,
+        },
+        preflight_records=[preflight_record],
+        confirmation_records=[
+            {
+                "confirmation_id": "confirmation_model_config_draft_001",
+                "step_id": "step_2",
+                "capability_id": "quant_studio.prepare_model_config_draft",
+                "status": "required",
+                "reason": "Draft-only Studio changes require explicit review before execution.",
+            }
+        ],
+        action_requests=[action_request],
+        action_results=[action_result],
+        validation_results=PlanValidationResult(status="valid"),
+        policy_rejections=[],
+    )
+
+    snapshot = entry.model_dump(mode="json")
+    dumped = str(snapshot)
+    assert snapshot["action_requests"][0]["execution_permitted"] is False
+    assert snapshot["action_results"][0]["execution_status"] == "not_executed"
+    assert "raw.csv" not in dumped
+    assert "private-bucket" not in dumped
+    assert "rm -rf" not in dumped
+    assert "provider_prompt" not in dumped
+    assert "provider_response" not in dumped
+    validate_against_contract(snapshot["action_requests"][0], "agent_action_request.v1.schema.json")
+    validate_against_contract(
+        snapshot["preflight_records"][0],
+        "agent_action_preflight.v1.schema.json",
+    )
+    validate_against_contract(snapshot["action_results"][0], "agent_action_result.v1.schema.json")
+    validate_against_contract(snapshot, "agent_execution_ledger.v1.schema.json")
 
 
 def test_policy_rejection_ledger_validates_against_agent_execution_ledger_contract() -> None:
