@@ -4,7 +4,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from quant_agent_runtime import __version__
-from quant_agent_runtime.models import PlanRequest, PlanResult, RuntimeManifest
+from quant_agent_runtime.app_clients import AppClientError
+from quant_agent_runtime.models import PreflightRequest, PreflightResult, PlanRequest, PlanResult, RuntimeManifest
 from quant_agent_runtime.runtime import RuntimeContainer, build_runtime
 from quant_agent_runtime.validation.errors import RuntimeValidationError
 
@@ -53,6 +54,21 @@ def create_app(runtime: RuntimeContainer | None = None) -> FastAPI:
             return runtime_container.planner.create_plan(request)
         except RuntimeValidationError as exc:
             raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
+
+    @api.post("/preflights", response_model=PreflightResult)
+    def create_preflight(request: PreflightRequest) -> PreflightResult:
+        try:
+            return runtime_container.preflight.create_preflight(request)
+        except RuntimeValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
+        except AppClientError as exc:
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail={
+                    "code": "app_unavailable" if exc.status_code == 503 else "app_preflight_error",
+                    "message": str(exc),
+                },
+            ) from exc
 
     return api
 

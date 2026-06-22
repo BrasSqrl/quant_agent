@@ -8,12 +8,15 @@ from quant_agent_runtime.contracts.internal_test_fixtures import TEMPORARY_AGENT
 from quant_agent_runtime.ledger import InMemoryLedger
 from quant_agent_runtime.model_gateway import FakePlanProvider
 from quant_agent_runtime.models import ProviderMode, ProviderRuntimeStatus, RiskTier, RuntimeManifest
+from quant_agent_runtime.app_clients import LocalAgentAppClient
 from quant_agent_runtime.planner import PlannerService
+from quant_agent_runtime.preflight import PreflightService
 
 
 @dataclass
 class RuntimeContainer:
     planner: PlannerService
+    preflight: PreflightService
     contract_loader: QuantSuiteContractLoader
     provider_status: ProviderRuntimeStatus | None = None
 
@@ -36,6 +39,7 @@ class RuntimeContainer:
                 "GET /health",
                 "GET /runtime/manifest",
                 "POST /plans",
+                "POST /preflights",
             ],
             supported_provider_modes=[
                 ProviderMode.fake_provider,
@@ -52,8 +56,8 @@ class RuntimeContainer:
             ],
             policy_version="internal-policy.v0",
             runtime_health_endpoint="/health",
-            capability_discovery_endpoints=[],
-            ledger_support_level="plan_only_in_memory",
+            capability_discovery_endpoints=["quant_data:/api/agent/capabilities"],
+            ledger_support_level="plan_preflight_in_memory",
             plan_only_support_level="supported",
             execution_support_level="not_supported",
             redaction_support_level="deterministic_context_redaction",
@@ -74,6 +78,7 @@ class RuntimeContainer:
                 "no_app_execution",
                 "no_real_provider",
                 "server_side_provider_boundary",
+                "app_owned_preflight_only",
                 "sanitized_context_only",
                 "safe_ledger_only",
             ],
@@ -96,8 +101,14 @@ def build_runtime() -> RuntimeContainer:
         ledger=ledger,
         default_capabilities=canonical_capabilities or None,
     )
+    preflight = PreflightService(
+        ledger=ledger,
+        contract_loader=contract_loader,
+        app_client=LocalAgentAppClient.from_environment(),
+    )
     return RuntimeContainer(
         planner=planner,
+        preflight=preflight,
         contract_loader=contract_loader,
         provider_status=provider_status,
     )

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import importlib.util
 from dataclasses import dataclass
 from json import JSONDecodeError
 from pathlib import Path
+from typing import Any
 
 from quant_agent_runtime.models import CapabilityDefinition, ProviderRuntimeStatus, RiskTier
 from quant_agent_runtime.provider_config import (
@@ -105,3 +107,19 @@ class QuantSuiteContractLoader:
             payload,
             config_source=self._source_label,
         )
+
+    def validate_agent_contract_payload(self, payload: Any, schema_name: str) -> None:
+        schema_path = self._root / "contracts" / schema_name
+        validator_path = self._root / "scripts" / "validate_contracts.py"
+        if not schema_path.is_file():
+            raise ValueError(f"Canonical contract schema was not found: {schema_name}")
+        if not validator_path.is_file():
+            raise ValueError("Quant Suite contract validator was not found.")
+
+        spec = importlib.util.spec_from_file_location("quant_suite_contract_validator", validator_path)
+        if spec is None or spec.loader is None:
+            raise ValueError("Quant Suite contract validator could not be loaded.")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        schema = module.load_json(schema_path)
+        module.validate_schema(payload, schema)

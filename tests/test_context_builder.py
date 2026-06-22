@@ -15,6 +15,7 @@ from quant_agent_runtime.contracts import QuantSuiteContractLoader
 from quant_agent_runtime.ledger import InMemoryLedger
 from quant_agent_runtime.model_gateway import FakePlanProvider
 from quant_agent_runtime.planner import PlannerService
+from quant_agent_runtime.preflight import PreflightService
 from quant_agent_runtime.runtime import RuntimeContainer
 
 
@@ -57,14 +58,31 @@ def validate_against_contract(payload: object, schema_name: str) -> None:
 def runtime_with_canonical_capabilities() -> RuntimeContainer:
     loader = QuantSuiteContractLoader(QUANT_SUITE_ROOT)
     capabilities = loader.load_agent_capabilities()
+    ledger = InMemoryLedger()
     return RuntimeContainer(
         planner=PlannerService(
             provider=FakePlanProvider(),
-            ledger=InMemoryLedger(),
+            ledger=ledger,
             default_capabilities=capabilities or None,
+        ),
+        preflight=PreflightService(
+            ledger=ledger,
+            contract_loader=loader,
+            app_client=FakePreflightAppClient(),
         ),
         contract_loader=loader,
     )
+
+
+class FakePreflightAppClient:
+    def create_preflight(
+        self,
+        *,
+        app_id: str,
+        capability_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {}
 
 
 def load_lifecycle_fixture() -> dict[str, object]:

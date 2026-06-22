@@ -197,6 +197,20 @@ class PlanResult(StrictModel):
     ledger_recorded: bool
 
 
+class PreflightRequest(StrictModel):
+    run_id: str = Field(min_length=1)
+    step_id: str = Field(min_length=1)
+
+
+class PreflightResult(StrictModel):
+    run_id: str
+    step_id: str
+    capability_id: str
+    preflight: dict[str, Any]
+    validation: PlanValidationResult
+    ledger_recorded: bool
+
+
 class LedgerEntry(StrictModel):
     schema_version: str = "1.0"
     data_policy: Literal["summaries_and_references_only"] = "summaries_and_references_only"

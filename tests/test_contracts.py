@@ -19,6 +19,7 @@ from quant_agent_runtime.models import (
     ProviderMode,
     RedactionSummary,
 )
+from quant_agent_runtime.preflight import PreflightService
 from quant_agent_runtime.planner import PlannerService
 from quant_agent_runtime.runtime import RuntimeContainer
 from quant_agent_runtime.validation.errors import RuntimeValidationError
@@ -60,6 +61,20 @@ class StaticProvider(ModelProvider):
                 supports_execution=False,
             ),
         )
+
+
+class FakePreflightAppClient:
+    def __init__(self, response: dict[str, object]) -> None:
+        self.response = response
+
+    def create_preflight(
+        self,
+        *,
+        app_id: str,
+        capability_id: str,
+        payload: dict[str, object],
+    ) -> dict[str, object]:
+        return dict(self.response)
 
 
 def valid_provider_output() -> dict[str, object]:
@@ -119,11 +134,17 @@ def load_contract_example(example_name: str) -> object:
 def runtime_with_loader(loader: QuantSuiteContractLoader) -> RuntimeContainer:
     capabilities = loader.load_agent_capabilities()
     provider_status = loader.load_agent_provider_status()
+    ledger = InMemoryLedger()
     return RuntimeContainer(
         planner=PlannerService(
             provider=FakePlanProvider(provider_status=provider_status),
-            ledger=InMemoryLedger(),
+            ledger=ledger,
             default_capabilities=capabilities or None,
+        ),
+        preflight=PreflightService(
+            ledger=ledger,
+            contract_loader=loader,
+            app_client=FakePreflightAppClient({}),
         ),
         contract_loader=loader,
         provider_status=provider_status,
