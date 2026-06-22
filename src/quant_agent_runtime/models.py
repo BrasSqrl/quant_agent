@@ -142,6 +142,7 @@ class PlanStep(StrictModel):
     app_id: str = Field(min_length=1)
     risk_tier: RiskTier
     operation: StepOperation = StepOperation.plan
+    preflight_required: bool = False
     requires_confirmation: bool = False
     action_input: dict[str, Any] = Field(default_factory=dict)
     expected_artifacts: list[str] = Field(default_factory=list)
@@ -248,6 +249,8 @@ class RuntimeManifest(StrictModel):
     policy_version: str
     runtime_health_endpoint: str
     capability_discovery_endpoints: list[str]
+    capability_discovery: dict[str, Any] = Field(default_factory=dict)
+    supported_preflight_capabilities: list[str] = Field(default_factory=list)
     ledger_support_level: str
     plan_only_support_level: str
     execution_support_level: str

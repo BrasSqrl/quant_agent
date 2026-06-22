@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from quant_agent_runtime.api import create_app
+from quant_agent_runtime.capability_discovery import CapabilityDiscoveryService
 from quant_agent_runtime.context_builder import LifecycleContextBuilder
 from quant_agent_runtime.contracts import QuantSuiteContractLoader
 from quant_agent_runtime.ledger import InMemoryLedger
@@ -59,6 +60,8 @@ def runtime_with_canonical_capabilities() -> RuntimeContainer:
     loader = QuantSuiteContractLoader(QUANT_SUITE_ROOT)
     capabilities = loader.load_agent_capabilities()
     ledger = InMemoryLedger()
+    app_client = FakePreflightAppClient()
+    discovery = CapabilityDiscoveryService(contract_loader=loader, app_client=app_client)
     return RuntimeContainer(
         planner=PlannerService(
             provider=FakePlanProvider(),
@@ -68,13 +71,48 @@ def runtime_with_canonical_capabilities() -> RuntimeContainer:
         preflight=PreflightService(
             ledger=ledger,
             contract_loader=loader,
-            app_client=FakePreflightAppClient(),
+            app_client=app_client,
+            capability_discovery=discovery,
         ),
         contract_loader=loader,
+        capability_discovery=discovery,
     )
 
 
 class FakePreflightAppClient:
+    def discover_capabilities(self, *, app_id: str) -> dict[str, Any]:
+        capabilities: list[dict[str, Any]]
+        if app_id == "quant_data":
+            capabilities = [
+                {
+                    "capability_id": "quant_data.run_source_preflight",
+                    "app_id": "quant_data",
+                    "risk_tier": "workflow_preflight",
+                    "enabled": True,
+                    "preflight_required": True,
+                    "confirmation_required": False,
+                }
+            ]
+        elif app_id == "quant_monitoring":
+            capabilities = [
+                {
+                    "capability_id": "quant_monitoring.validate_bundle",
+                    "app_id": "quant_monitoring",
+                    "risk_tier": "workflow_preflight",
+                    "enabled": True,
+                    "preflight_required": True,
+                    "confirmation_required": False,
+                }
+            ]
+        else:
+            capabilities = []
+        return {
+            "schema_version": "1.0",
+            "data_policy": "summaries_and_references_only",
+            "app_id": app_id,
+            "capabilities": capabilities,
+        }
+
     def create_preflight(
         self,
         *,

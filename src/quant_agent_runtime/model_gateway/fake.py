@@ -47,6 +47,7 @@ class FakePlanProvider(ModelProvider):
                     "app_id": capability.app_id,
                     "risk_tier": capability.risk_tier.value,
                     "operation": "plan",
+                    "preflight_required": capability.preflight_required,
                     "requires_confirmation": requires_confirmation,
                     "action_input": action_input,
                     "expected_artifacts": [],

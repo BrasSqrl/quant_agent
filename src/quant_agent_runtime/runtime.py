@@ -3,12 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from quant_agent_runtime import __version__
+from quant_agent_runtime.capabilities import default_capabilities
 from quant_agent_runtime.contracts import QuantSuiteContractLoader
 from quant_agent_runtime.contracts.internal_test_fixtures import TEMPORARY_AGENT_CONTRACT_FIXTURES
 from quant_agent_runtime.ledger import InMemoryLedger
 from quant_agent_runtime.model_gateway import FakePlanProvider
 from quant_agent_runtime.models import ProviderMode, ProviderRuntimeStatus, RiskTier, RuntimeManifest
 from quant_agent_runtime.app_clients import LocalAgentAppClient
+from quant_agent_runtime.capability_discovery import CapabilityDiscoveryService
 from quant_agent_runtime.planner import PlannerService
 from quant_agent_runtime.preflight import PreflightService
 
@@ -18,11 +20,15 @@ class RuntimeContainer:
     planner: PlannerService
     preflight: PreflightService
     contract_loader: QuantSuiteContractLoader
+    capability_discovery: CapabilityDiscoveryService
     provider_status: ProviderRuntimeStatus | None = None
 
     def manifest(self) -> RuntimeManifest:
         contract_result = self.contract_loader.load_agent_contracts()
         provider_status = self.provider_status or self.contract_loader.load_agent_provider_status()
+        canonical_capabilities = self.contract_loader.load_agent_capabilities()
+        capabilities = canonical_capabilities or default_capabilities()
+        discovery_result = self.capability_discovery.discover(canonical_capabilities)
         loaded_contracts = (
             contract_result.loaded_agent_contracts
             if contract_result.canonical_agent_contracts_loaded
@@ -56,7 +62,12 @@ class RuntimeContainer:
             ],
             policy_version="internal-policy.v0",
             runtime_health_endpoint="/health",
-            capability_discovery_endpoints=["quant_data:/api/agent/capabilities"],
+            capability_discovery_endpoints=[
+                "quant_data:/api/agent/capabilities",
+                "quant_monitoring:/api/agent/capabilities",
+            ],
+            capability_discovery=discovery_result.diagnostics,
+            supported_preflight_capabilities=discovery_result.supported_preflight_capabilities,
             ledger_support_level="plan_preflight_in_memory",
             plan_only_support_level="supported",
             execution_support_level="not_supported",
@@ -101,14 +112,21 @@ def build_runtime() -> RuntimeContainer:
         ledger=ledger,
         default_capabilities=canonical_capabilities or None,
     )
+    app_client = LocalAgentAppClient.from_environment()
+    capability_discovery = CapabilityDiscoveryService(
+        contract_loader=contract_loader,
+        app_client=app_client,
+    )
     preflight = PreflightService(
         ledger=ledger,
         contract_loader=contract_loader,
-        app_client=LocalAgentAppClient.from_environment(),
+        app_client=app_client,
+        capability_discovery=capability_discovery,
     )
     return RuntimeContainer(
         planner=planner,
         preflight=preflight,
         contract_loader=contract_loader,
+        capability_discovery=capability_discovery,
         provider_status=provider_status,
     )

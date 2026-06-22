@@ -80,6 +80,9 @@ class PlannerService:
             capabilities=registry.enabled(),
             policy=request.policy,
         )
+        capability_snapshot = [
+            capability.model_dump(mode="json") for capability in registry.enabled()
+        ]
         provider_result = self._provider.generate_plan(provider_request)
         provider_metadata = provider_result.metadata
 
@@ -119,6 +122,7 @@ class PlannerService:
             redaction_summary=redaction_summary,
             context_preview=context_preview,
             plan_snapshot=structured_plan.model_dump(mode="json"),
+            capability_snapshot=capability_snapshot,
             validation_results=validation,
             policy_rejections=[],
         )

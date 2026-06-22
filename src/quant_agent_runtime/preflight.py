@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from quant_agent_runtime.app_clients import AgentAppClient, AppClientError
+from quant_agent_runtime.capability_discovery import CapabilityDiscoveryService
 from quant_agent_runtime.contracts import QuantSuiteContractLoader
 from quant_agent_runtime.ledger import InMemoryLedger
 from quant_agent_runtime.models import (
@@ -15,7 +16,6 @@ from quant_agent_runtime.models import (
 from quant_agent_runtime.redaction import find_unsafe_payload_issues
 from quant_agent_runtime.validation.errors import RuntimeValidationError
 
-SOURCE_PREFLIGHT_CAPABILITY_ID = "quant_data.run_source_preflight"
 PREFLIGHT_CONTRACT_SCHEMA = "agent_action_preflight.v1.schema.json"
 
 
@@ -26,10 +26,12 @@ class PreflightService:
         ledger: InMemoryLedger,
         contract_loader: QuantSuiteContractLoader,
         app_client: AgentAppClient,
+        capability_discovery: CapabilityDiscoveryService,
     ) -> None:
         self._ledger = ledger
         self._contract_loader = contract_loader
         self._app_client = app_client
+        self._capability_discovery = capability_discovery
 
     def create_preflight(self, request: PreflightRequest) -> PreflightResult:
         entry = self._ledger.get(request.run_id)
@@ -46,10 +48,41 @@ class PreflightService:
 
         capability_id = str(step.get("capability_id") or "")
         app_id = str(step.get("app_id") or "")
-        if capability_id != SOURCE_PREFLIGHT_CAPABILITY_ID or app_id != "quant_data":
+        capability = _capability_snapshot(entry, capability_id, app_id)
+        if capability is None:
+            raise _rejected(
+                "unknown_preflight_capability",
+                "The recorded plan step capability was not found in the ledger capability snapshot.",
+                step_id=request.step_id,
+                capability_id=capability_id or None,
+            )
+        if not bool(capability.get("preflight_required")):
             raise _rejected(
                 "unsupported_preflight_step",
-                "The recorded plan step does not support app-owned preflight in this runtime slice.",
+                "The recorded plan step does not require app-owned preflight.",
+                step_id=request.step_id,
+                capability_id=capability_id or None,
+            )
+        if app_id not in {"quant_data", "quant_monitoring"}:
+            raise _rejected(
+                "unsupported_preflight_app",
+                "The recorded plan step is owned by an app without configured preflight routing.",
+                step_id=request.step_id,
+                capability_id=capability_id or None,
+            )
+
+        discovery_result = self._capability_discovery.discover()
+        if not discovery_result.supports_preflight(capability_id):
+            if discovery_result.app_is_unavailable(app_id):
+                raise _rejected(
+                    "preflight_app_unavailable",
+                    "The owning app is not currently advertising agent capabilities.",
+                    step_id=request.step_id,
+                    capability_id=capability_id or None,
+                )
+            raise _rejected(
+                "preflight_capability_unavailable",
+                "The recorded plan step capability is not currently reconciled as app-owned preflight support.",
                 step_id=request.step_id,
                 capability_id=capability_id or None,
             )
@@ -136,6 +169,19 @@ def _plan_step(entry: LedgerEntry, step_id: str) -> dict[str, Any] | None:
     for step in steps:
         if isinstance(step, dict) and step.get("step_id") == step_id:
             return step
+    return None
+
+
+def _capability_snapshot(
+    entry: LedgerEntry,
+    capability_id: str,
+    app_id: str,
+) -> dict[str, Any] | None:
+    for capability in entry.capability_snapshot:
+        if not isinstance(capability, dict):
+            continue
+        if capability.get("capability_id") == capability_id and capability.get("app_id") == app_id:
+            return capability
     return None
 
 

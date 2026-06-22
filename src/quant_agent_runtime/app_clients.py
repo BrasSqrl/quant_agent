@@ -15,6 +15,13 @@ class AppClientError(Exception):
 
 
 class AgentAppClient(Protocol):
+    def discover_capabilities(
+        self,
+        *,
+        app_id: str,
+    ) -> dict[str, Any]:
+        ...
+
     def create_preflight(
         self,
         *,
@@ -28,6 +35,7 @@ class AgentAppClient(Protocol):
 @dataclass(frozen=True)
 class LocalAgentAppClient:
     quant_data_base_url: str
+    quant_monitoring_base_url: str
     timeout_seconds: float = 5.0
 
     @classmethod
@@ -36,7 +44,11 @@ class LocalAgentAppClient:
             quant_data_base_url=os.environ.get(
                 "QUANT_DATA_AGENT_API_BASE_URL",
                 "http://127.0.0.1:8830",
-            ).rstrip("/")
+            ).rstrip("/"),
+            quant_monitoring_base_url=os.environ.get(
+                "QUANT_MONITORING_AGENT_API_BASE_URL",
+                "http://127.0.0.1:8820",
+            ).rstrip("/"),
         )
 
     def create_preflight(
@@ -46,9 +58,10 @@ class LocalAgentAppClient:
         capability_id: str,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        if app_id != "quant_data":
+        base_url = self._base_url_for(app_id)
+        if base_url is None:
             raise AppClientError(f"No local preflight client is configured for {app_id}.", status_code=422)
-        url = f"{self.quant_data_base_url}/api/agent/actions/{capability_id}/preflight"
+        url = f"{base_url}/api/agent/actions/{capability_id}/preflight"
         body = json.dumps(payload).encode("utf-8")
         request = Request(
             url,
@@ -67,7 +80,7 @@ class LocalAgentAppClient:
             ) from exc
         except (OSError, URLError) as exc:
             raise AppClientError(
-                "Quant Data preflight app is unavailable.",
+                f"{_app_label(app_id)} preflight app is unavailable.",
                 status_code=503,
             ) from exc
 
@@ -78,3 +91,63 @@ class LocalAgentAppClient:
         if not isinstance(payload_object, dict):
             raise AppClientError("Preflight app returned a non-object response.", status_code=502)
         return payload_object
+
+    def discover_capabilities(
+        self,
+        *,
+        app_id: str,
+    ) -> dict[str, Any]:
+        base_url = self._base_url_for(app_id)
+        if base_url is None:
+            raise AppClientError(
+                f"No local capability discovery client is configured for {app_id}.",
+                status_code=422,
+            )
+        url = f"{base_url}/api/agent/capabilities"
+        request = Request(
+            url,
+            method="GET",
+            headers={"Accept": "application/json"},
+        )
+        try:
+            with urlopen(request, timeout=self.timeout_seconds) as response:
+                response_body = response.read().decode("utf-8")
+        except HTTPError as exc:
+            raise AppClientError(
+                f"{_app_label(app_id)} capability discovery returned HTTP {exc.code}.",
+                status_code=502,
+            ) from exc
+        except (OSError, URLError) as exc:
+            raise AppClientError(
+                f"{_app_label(app_id)} capability discovery app is unavailable.",
+                status_code=503,
+            ) from exc
+
+        try:
+            payload_object = json.loads(response_body)
+        except json.JSONDecodeError as exc:
+            raise AppClientError(
+                f"{_app_label(app_id)} capability discovery returned invalid JSON.",
+                status_code=502,
+            ) from exc
+        if not isinstance(payload_object, dict):
+            raise AppClientError(
+                f"{_app_label(app_id)} capability discovery returned a non-object response.",
+                status_code=502,
+            )
+        return payload_object
+
+    def _base_url_for(self, app_id: str) -> str | None:
+        if app_id == "quant_data":
+            return self.quant_data_base_url
+        if app_id == "quant_monitoring":
+            return self.quant_monitoring_base_url
+        return None
+
+
+def _app_label(app_id: str) -> str:
+    if app_id == "quant_data":
+        return "Quant Data"
+    if app_id == "quant_monitoring":
+        return "Quant Monitoring"
+    return app_id
