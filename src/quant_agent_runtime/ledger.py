@@ -52,6 +52,81 @@ class InMemoryLedger:
             return sanitized_entry
         raise KeyError(f"Unknown run_id: {run_id}")
 
+    def append_confirmation_record(self, run_id: str, record: dict[str, Any]) -> LedgerEntry:
+        for index in range(len(self._entries) - 1, -1, -1):
+            entry = self._entries[index]
+            if entry.run_id != run_id:
+                continue
+            updated = entry.model_copy(
+                update={
+                    "confirmation_records": [
+                        *entry.confirmation_records,
+                        record,
+                    ],
+                },
+                deep=True,
+            )
+            sanitized_entry = self._sanitize_entry(updated)
+            issues = find_unsafe_payload_issues(
+                sanitized_entry.model_dump(mode="json"),
+                root="ledger",
+            )
+            if issues:
+                raise ValueError("Ledger entry contains unsafe fields.")
+            self._entries[index] = sanitized_entry
+            return sanitized_entry
+        raise KeyError(f"Unknown run_id: {run_id}")
+
+    def append_action_request(self, run_id: str, record: dict[str, Any]) -> LedgerEntry:
+        for index in range(len(self._entries) - 1, -1, -1):
+            entry = self._entries[index]
+            if entry.run_id != run_id:
+                continue
+            updated = entry.model_copy(
+                update={
+                    "action_requests": [
+                        *entry.action_requests,
+                        record,
+                    ],
+                },
+                deep=True,
+            )
+            sanitized_entry = self._sanitize_entry(updated)
+            issues = find_unsafe_payload_issues(
+                sanitized_entry.model_dump(mode="json"),
+                root="ledger",
+            )
+            if issues:
+                raise ValueError("Ledger entry contains unsafe fields.")
+            self._entries[index] = sanitized_entry
+            return sanitized_entry
+        raise KeyError(f"Unknown run_id: {run_id}")
+
+    def append_action_result(self, run_id: str, record: dict[str, Any]) -> LedgerEntry:
+        for index in range(len(self._entries) - 1, -1, -1):
+            entry = self._entries[index]
+            if entry.run_id != run_id:
+                continue
+            updated = entry.model_copy(
+                update={
+                    "action_results": [
+                        *entry.action_results,
+                        record,
+                    ],
+                },
+                deep=True,
+            )
+            sanitized_entry = self._sanitize_entry(updated)
+            issues = find_unsafe_payload_issues(
+                sanitized_entry.model_dump(mode="json"),
+                root="ledger",
+            )
+            if issues:
+                raise ValueError("Ledger entry contains unsafe fields.")
+            self._entries[index] = sanitized_entry
+            return sanitized_entry
+        raise KeyError(f"Unknown run_id: {run_id}")
+
     def list_entries(self) -> list[LedgerEntry]:
         return list(self._entries)
 

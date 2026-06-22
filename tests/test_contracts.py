@@ -6,10 +6,13 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from quant_agent_runtime.action_request import ActionRequestPreviewService
 from quant_agent_runtime.api import create_app
 from quant_agent_runtime.capabilities import default_capabilities
 from quant_agent_runtime.capability_discovery import CapabilityDiscoveryService
+from quant_agent_runtime.confirmation import ConfirmationService
 from quant_agent_runtime.contracts import QuantSuiteContractLoader
+from quant_agent_runtime.execution import ExecutionService
 from quant_agent_runtime.ledger import InMemoryLedger
 from quant_agent_runtime.model_gateway import FakePlanProvider, ModelProvider, ProviderPlanRequest, ProviderResult
 from quant_agent_runtime.models import (
@@ -91,6 +94,18 @@ class FakePreflightAppClient:
                     "confirmation_required": False,
                 }
             ]
+        elif app_id == "quant_studio":
+            capabilities = [
+                {
+                    "capability_id": "quant_studio.prepare_model_config_draft",
+                    "app_id": "quant_studio",
+                    "risk_tier": "draft_only",
+                    "enabled": True,
+                    "preflight_required": False,
+                    "confirmation_required": True,
+                    "execution_supported": True,
+                }
+            ]
         else:
             capabilities = []
         return {
@@ -108,6 +123,15 @@ class FakePreflightAppClient:
         payload: dict[str, object],
     ) -> dict[str, object]:
         return dict(self.response)
+
+    def execute_action(
+        self,
+        *,
+        app_id: str,
+        capability_id: str,
+        payload: dict[str, object],
+    ) -> dict[str, object]:
+        return {}
 
 
 def valid_provider_output() -> dict[str, object]:
@@ -177,6 +201,14 @@ def runtime_with_loader(loader: QuantSuiteContractLoader) -> RuntimeContainer:
             default_capabilities=capabilities or None,
         ),
         preflight=PreflightService(
+            ledger=ledger,
+            contract_loader=loader,
+            app_client=app_client,
+            capability_discovery=discovery,
+        ),
+        confirmation=ConfirmationService(ledger=ledger),
+        action_request=ActionRequestPreviewService(ledger=ledger, contract_loader=loader),
+        execution=ExecutionService(
             ledger=ledger,
             contract_loader=loader,
             app_client=app_client,

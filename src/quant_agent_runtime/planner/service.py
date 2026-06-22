@@ -28,6 +28,7 @@ from quant_agent_runtime.redaction import (
     redact_text,
     sanitize_value,
 )
+from quant_agent_runtime.run_state import run_state_for_entry
 from quant_agent_runtime.validation import PlanValidator
 from quant_agent_runtime.validation.errors import MalformedProviderOutputError, RuntimeValidationError
 
@@ -126,10 +127,11 @@ class PlannerService:
             validation_results=validation,
             policy_rejections=[],
         )
-        self._ledger.append(ledger_entry)
+        recorded_entry = self._ledger.append(ledger_entry)
 
         return PlanResult(
             run_id=run_id,
+            run_state=run_state_for_entry(recorded_entry),
             provider_metadata=provider_metadata,
             redaction_summary=redaction_summary,
             context_preview=context_preview,

@@ -31,10 +31,20 @@ class AgentAppClient(Protocol):
     ) -> dict[str, Any]:
         ...
 
+    def execute_action(
+        self,
+        *,
+        app_id: str,
+        capability_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        ...
+
 
 @dataclass(frozen=True)
 class LocalAgentAppClient:
     quant_data_base_url: str
+    quant_studio_base_url: str
     quant_monitoring_base_url: str
     timeout_seconds: float = 5.0
 
@@ -44,6 +54,10 @@ class LocalAgentAppClient:
             quant_data_base_url=os.environ.get(
                 "QUANT_DATA_AGENT_API_BASE_URL",
                 "http://127.0.0.1:8830",
+            ).rstrip("/"),
+            quant_studio_base_url=os.environ.get(
+                "QUANT_STUDIO_AGENT_API_BASE_URL",
+                "http://127.0.0.1:8810",
             ).rstrip("/"),
             quant_monitoring_base_url=os.environ.get(
                 "QUANT_MONITORING_AGENT_API_BASE_URL",
@@ -90,6 +104,47 @@ class LocalAgentAppClient:
             raise AppClientError("Preflight app returned invalid JSON.", status_code=502) from exc
         if not isinstance(payload_object, dict):
             raise AppClientError("Preflight app returned a non-object response.", status_code=502)
+        return payload_object
+
+    def execute_action(
+        self,
+        *,
+        app_id: str,
+        capability_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        base_url = self._base_url_for(app_id)
+        if base_url is None:
+            raise AppClientError(f"No local execution client is configured for {app_id}.", status_code=422)
+        url = f"{base_url}/api/agent/actions/{capability_id}/execute"
+        body = json.dumps(payload).encode("utf-8")
+        request = Request(
+            url,
+            data=body,
+            method="POST",
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+        )
+        try:
+            with urlopen(request, timeout=self.timeout_seconds) as response:
+                response_body = response.read().decode("utf-8")
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise AppClientError(
+                f"Execution app returned HTTP {exc.code}: {detail[:240]}",
+                status_code=502,
+            ) from exc
+        except (OSError, URLError) as exc:
+            raise AppClientError(
+                f"{_app_label(app_id)} execution app is unavailable.",
+                status_code=503,
+            ) from exc
+
+        try:
+            payload_object = json.loads(response_body)
+        except json.JSONDecodeError as exc:
+            raise AppClientError("Execution app returned invalid JSON.", status_code=502) from exc
+        if not isinstance(payload_object, dict):
+            raise AppClientError("Execution app returned a non-object response.", status_code=502)
         return payload_object
 
     def discover_capabilities(
@@ -140,6 +195,8 @@ class LocalAgentAppClient:
     def _base_url_for(self, app_id: str) -> str | None:
         if app_id == "quant_data":
             return self.quant_data_base_url
+        if app_id == "quant_studio":
+            return self.quant_studio_base_url
         if app_id == "quant_monitoring":
             return self.quant_monitoring_base_url
         return None
@@ -148,6 +205,8 @@ class LocalAgentAppClient:
 def _app_label(app_id: str) -> str:
     if app_id == "quant_data":
         return "Quant Data"
+    if app_id == "quant_studio":
+        return "Quant Studio"
     if app_id == "quant_monitoring":
         return "Quant Monitoring"
     return app_id

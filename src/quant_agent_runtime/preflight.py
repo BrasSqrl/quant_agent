@@ -14,6 +14,7 @@ from quant_agent_runtime.models import (
     ValidationIssue,
 )
 from quant_agent_runtime.redaction import find_unsafe_payload_issues
+from quant_agent_runtime.run_state import run_state_for_entry
 from quant_agent_runtime.validation.errors import RuntimeValidationError
 
 PREFLIGHT_CONTRACT_SCHEMA = "agent_action_preflight.v1.schema.json"
@@ -106,12 +107,13 @@ class PreflightService:
             raise AppClientError("Preflight app call failed.", status_code=502) from exc
 
         self._validate_preflight_response(preflight, step)
-        self._ledger.append_preflight_record(request.run_id, preflight)
+        recorded_entry = self._ledger.append_preflight_record(request.run_id, preflight)
         return PreflightResult(
             run_id=request.run_id,
             step_id=request.step_id,
             capability_id=capability_id,
             preflight=preflight,
+            run_state=run_state_for_entry(recorded_entry),
             validation=PlanValidationResult(status="valid"),
             ledger_recorded=True,
         )

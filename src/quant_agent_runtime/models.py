@@ -188,8 +188,24 @@ class PlanValidationResult(StrictModel):
     warnings: list[ValidationIssue] = Field(default_factory=list)
 
 
+RunState = Literal[
+    "planned",
+    "waiting_for_input",
+    "waiting_for_confirmation",
+    "preflight_blocked",
+    "ready_for_execution_preview",
+    "running",
+    "completed",
+    "completed_with_warnings",
+    "failed_recoverable",
+    "failed_terminal",
+    "cancelled",
+]
+
+
 class PlanResult(StrictModel):
     run_id: str
+    run_state: RunState
     provider_metadata: ProviderMetadata
     redaction_summary: RedactionSummary
     context_preview: ContextPreview
@@ -208,6 +224,54 @@ class PreflightResult(StrictModel):
     step_id: str
     capability_id: str
     preflight: dict[str, Any]
+    run_state: RunState
+    validation: PlanValidationResult
+    ledger_recorded: bool
+
+
+class ConfirmationRequest(StrictModel):
+    run_id: str = Field(min_length=1)
+    step_id: str = Field(min_length=1)
+    confirmation_intent: str = Field(min_length=1)
+
+
+class ConfirmationResult(StrictModel):
+    run_id: str
+    step_id: str
+    capability_id: str
+    confirmation: dict[str, Any]
+    run_state: RunState
+    validation: PlanValidationResult
+    ledger_recorded: bool
+
+
+class ActionRequestPreviewRequest(StrictModel):
+    run_id: str = Field(min_length=1)
+    step_id: str = Field(min_length=1)
+
+
+class ActionRequestPreviewResult(StrictModel):
+    run_id: str
+    step_id: str
+    capability_id: str
+    action_request: dict[str, Any]
+    run_state: RunState
+    validation: PlanValidationResult
+    ledger_recorded: bool
+
+
+class ExecutionRequest(StrictModel):
+    run_id: str = Field(min_length=1)
+    step_id: str = Field(min_length=1)
+
+
+class ExecutionResult(StrictModel):
+    run_id: str
+    step_id: str
+    capability_id: str
+    action_request: dict[str, Any]
+    action_result: dict[str, Any]
+    run_state: RunState
     validation: PlanValidationResult
     ledger_recorded: bool
 
@@ -251,6 +315,7 @@ class RuntimeManifest(StrictModel):
     capability_discovery_endpoints: list[str]
     capability_discovery: dict[str, Any] = Field(default_factory=dict)
     supported_preflight_capabilities: list[str] = Field(default_factory=list)
+    supported_execution_capabilities: list[str] = Field(default_factory=list)
     ledger_support_level: str
     plan_only_support_level: str
     execution_support_level: str

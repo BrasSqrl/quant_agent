@@ -9,17 +9,22 @@ from quant_agent_runtime.models import CapabilityDefinition
 from quant_agent_runtime.redaction import find_unsafe_payload_issues
 
 
-DISCOVERABLE_AGENT_APPS = ("quant_data", "quant_monitoring")
+DISCOVERABLE_AGENT_APPS = ("quant_data", "quant_studio", "quant_monitoring")
 CAPABILITY_DISCOVERY_DATA_POLICY = "summaries_and_references_only"
+SUPPORTED_EXECUTION_CAPABILITIES = frozenset({"quant_studio.prepare_model_config_draft"})
 
 
 @dataclass(frozen=True)
 class CapabilityDiscoveryResult:
     supported_preflight_capabilities: list[str]
+    supported_execution_capabilities: list[str]
     diagnostics: dict[str, Any]
 
     def supports_preflight(self, capability_id: str) -> bool:
         return capability_id in set(self.supported_preflight_capabilities)
+
+    def supports_execution(self, capability_id: str) -> bool:
+        return capability_id in set(self.supported_execution_capabilities)
 
     def app_is_unavailable(self, app_id: str) -> bool:
         return app_id in set(_string_list(self.diagnostics.get("unavailable_apps")))
@@ -49,6 +54,7 @@ class CapabilityDiscoveryService:
         app_statuses: list[dict[str, Any]] = []
         top_level_warnings: list[dict[str, str]] = []
         supported_ids: list[str] = []
+        supported_execution_ids: list[str] = []
         unsupported_ids: list[str] = []
         discovered_ids: list[str] = []
         discovered_apps: list[str] = []
@@ -150,19 +156,31 @@ class CapabilityDiscoveryService:
                 _append_unique(status["supported_capability_ids"], capability_id)
                 if canonical.preflight_required:
                     _append_unique(supported_ids, capability_id)
+                if _execution_capability_supported(raw_capability, canonical):
+                    _append_unique(supported_execution_ids, capability_id)
 
             discovered_for_app = set(_string_list(status["discovered_capability_ids"]))
             for canonical in capabilities:
-                if canonical.app_id != app_id or not canonical.preflight_required:
+                if canonical.app_id != app_id:
                     continue
                 if canonical.capability_id in discovered_for_app:
                     continue
-                warning = _warning(
-                    "canonical_capability_not_advertised",
-                    "A canonical app-owned preflight capability is not currently advertised by its app.",
-                    app_id=app_id,
-                    capability_id=canonical.capability_id,
-                )
+                if canonical.preflight_required:
+                    warning = _warning(
+                        "canonical_capability_not_advertised",
+                        "A canonical app-owned preflight capability is not currently advertised by its app.",
+                        app_id=app_id,
+                        capability_id=canonical.capability_id,
+                    )
+                elif canonical.capability_id in SUPPORTED_EXECUTION_CAPABILITIES:
+                    warning = _warning(
+                        "canonical_execution_capability_not_advertised",
+                        "A canonical app-owned execution capability is not currently advertised by its app.",
+                        app_id=app_id,
+                        capability_id=canonical.capability_id,
+                    )
+                else:
+                    continue
                 _append_unique(unsupported_ids, canonical.capability_id)
                 _append_unique(status["unsupported_capability_ids"], canonical.capability_id)
                 status["warnings"].append(warning)
@@ -171,6 +189,11 @@ class CapabilityDiscoveryService:
         canonical_order = [capability.capability_id for capability in capabilities]
         ordered_supported_ids = [
             capability_id for capability_id in canonical_order if capability_id in set(supported_ids)
+        ]
+        ordered_supported_execution_ids = [
+            capability_id
+            for capability_id in canonical_order
+            if capability_id in set(supported_execution_ids)
         ]
         diagnostics = {
             "schema_version": "1.0",
@@ -181,11 +204,13 @@ class CapabilityDiscoveryService:
             "discovered_capability_ids": discovered_ids,
             "unsupported_capability_ids": unsupported_ids,
             "supported_preflight_capabilities": ordered_supported_ids,
+            "supported_execution_capabilities": ordered_supported_execution_ids,
             "reconciliation_warnings": top_level_warnings,
             "app_statuses": app_statuses,
         }
         return CapabilityDiscoveryResult(
             supported_preflight_capabilities=ordered_supported_ids,
+            supported_execution_capabilities=ordered_supported_execution_ids,
             diagnostics=diagnostics,
         )
 
@@ -288,14 +313,27 @@ def _capability_reconciliation_warning(
             app_id=expected_app_id,
             capability_id=capability_id,
         )
-    if not canonical.preflight_required:
+    if not canonical.preflight_required and not _execution_capability_supported(discovered, canonical):
         return _warning(
-            "capability_not_preflight_capable",
-            "Discovered capability is canonical but is not an app-owned preflight capability.",
+            "capability_not_preflight_or_execution_capable",
+            "Discovered capability is canonical but is not a supported app-owned preflight or execution capability.",
             app_id=expected_app_id,
             capability_id=capability_id,
         )
     return None
+
+
+def _execution_capability_supported(
+    discovered: dict[str, Any],
+    canonical: CapabilityDefinition,
+) -> bool:
+    return (
+        canonical.capability_id in SUPPORTED_EXECUTION_CAPABILITIES
+        and canonical.app_id == "quant_studio"
+        and canonical.confirmation_required
+        and not canonical.preflight_required
+        and discovered.get("execution_supported") is True
+    )
 
 
 def _warning(
