@@ -329,14 +329,14 @@ class RunStatusService:
 
 
 def _status_result(entry: LedgerEntry) -> RunStatusResult:
-    state = run_state_for_entry(entry)
+    orchestration = orchestration_for_entry(entry)
     return RunStatusResult(
         run_id=entry.run_id,
         parent_run_id=entry.parent_run_id,
         parent_plan_id=entry.parent_plan_id,
         activated_revision_id=entry.activated_revision_id,
         child_run_ids=entry.child_run_ids,
-        run_state=state,
+        run_state=orchestration.run_state,
         final_status=entry.final_status,
         user_goal_summary=entry.user_goal_summary,
         plan=entry.plan_snapshot,
@@ -347,7 +347,9 @@ def _status_result(entry: LedgerEntry) -> RunStatusResult:
         latest_recovery=_latest(entry.recovery_events),
         latest_cancellation=_latest(entry.cancellation_events),
         ledger_summary=_ledger_summary(entry),
-        allowed_next_actions=orchestration_for_entry(entry).allowed_next_actions,
+        run_progress_summary=orchestration.run_progress_summary,
+        stale_assumption_summary=orchestration.stale_assumption_summary,
+        allowed_next_actions=orchestration.allowed_next_actions,
         validation=PlanValidationResult(status="valid"),
     )
 

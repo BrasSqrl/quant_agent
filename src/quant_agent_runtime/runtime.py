@@ -19,7 +19,10 @@ from quant_agent_runtime.plan_revision import PlanRevisionService
 from quant_agent_runtime.plan_revision_activation import PlanRevisionActivationService
 from quant_agent_runtime.planner import PlannerService
 from quant_agent_runtime.preflight import PreflightService
+from quant_agent_runtime.revalidation import RunRevalidationService
+from quant_agent_runtime.retry import RetryService
 from quant_agent_runtime.run_status import RunStatusService
+from quant_agent_runtime.sample_autopilot import SampleAutopilotPreviewService
 
 
 @dataclass
@@ -29,10 +32,13 @@ class RuntimeContainer:
     confirmation: ConfirmationService
     action_request: ActionRequestPreviewService
     execution: ExecutionService
+    retry: RetryService
     run_status: RunStatusService
     orchestration: OrchestrationService
     plan_revision: PlanRevisionService
     plan_revision_activation: PlanRevisionActivationService
+    revalidation: RunRevalidationService
+    sample_autopilot: SampleAutopilotPreviewService
     contract_loader: QuantSuiteContractLoader
     capability_discovery: CapabilityDiscoveryService
     provider_status: ProviderRuntimeStatus | None = None
@@ -63,6 +69,7 @@ class RuntimeContainer:
                 "POST /confirmations",
                 "POST /action-requests",
                 "POST /executions",
+                "POST /retries",
                 "GET /runs",
                 "GET /runs/{run_id}",
                 "GET /runs/{run_id}/orchestration",
@@ -72,6 +79,8 @@ class RuntimeContainer:
                 "POST /resumptions",
                 "POST /plan-revisions",
                 "POST /plan-revision-activations",
+                "POST /run-revalidations",
+                "POST /autopilot-previews",
             ],
             supported_provider_modes=[
                 ProviderMode.fake_provider,
@@ -101,8 +110,11 @@ class RuntimeContainer:
             ledger_storage=self.planner.ledger.diagnostics(),
             recovery_support_level="manual_pause_resume_only",
             orchestration_support_level="manual_guided_existing_steps_only",
+            retry_support_level="manual_current_step_only",
             plan_revision_support_level="manual_preview_only",
             plan_revision_activation_support_level="manual_child_run_only",
+            revalidation_support_level="manual_context_check_only",
+            autopilot_support_level="sample_owned_dry_run_preview_only",
             plan_only_support_level="supported",
             execution_support_level="single_step_review_draft_actions_only",
             redaction_support_level="deterministic_context_redaction",
@@ -168,6 +180,11 @@ def build_runtime() -> RuntimeContainer:
         app_client=app_client,
         capability_discovery=capability_discovery,
     )
+    retry = RetryService(
+        ledger=ledger,
+        execution=execution,
+        app_client=app_client,
+    )
     run_status = RunStatusService(ledger=ledger, capability_discovery=capability_discovery)
     orchestration = OrchestrationService(ledger=ledger)
     plan_revision = PlanRevisionService(
@@ -180,16 +197,21 @@ def build_runtime() -> RuntimeContainer:
         ledger=ledger,
         contract_loader=contract_loader,
     )
+    revalidation = RunRevalidationService(ledger=ledger)
+    sample_autopilot = SampleAutopilotPreviewService(ledger=ledger)
     return RuntimeContainer(
         planner=planner,
         preflight=preflight,
         confirmation=confirmation,
         action_request=action_request,
         execution=execution,
+        retry=retry,
         run_status=run_status,
         orchestration=orchestration,
         plan_revision=plan_revision,
         plan_revision_activation=plan_revision_activation,
+        revalidation=revalidation,
+        sample_autopilot=sample_autopilot,
         contract_loader=contract_loader,
         capability_discovery=capability_discovery,
         provider_status=provider_status,

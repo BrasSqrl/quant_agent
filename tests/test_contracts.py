@@ -27,9 +27,12 @@ from quant_agent_runtime.orchestration import OrchestrationService
 from quant_agent_runtime.plan_revision import PlanRevisionService
 from quant_agent_runtime.plan_revision_activation import PlanRevisionActivationService
 from quant_agent_runtime.preflight import PreflightService
+from quant_agent_runtime.retry import RetryService
+from quant_agent_runtime.revalidation import RunRevalidationService
 from quant_agent_runtime.planner import PlannerService
 from quant_agent_runtime.runtime import RuntimeContainer
 from quant_agent_runtime.run_status import RunStatusService
+from quant_agent_runtime.sample_autopilot import SampleAutopilotPreviewService
 from quant_agent_runtime.validation.errors import RuntimeValidationError
 
 
@@ -210,6 +213,12 @@ def runtime_with_loader(loader: QuantSuiteContractLoader) -> RuntimeContainer:
     ledger = InMemoryLedger()
     app_client = FakePreflightAppClient({})
     discovery = CapabilityDiscoveryService(contract_loader=loader, app_client=app_client)
+    execution = ExecutionService(
+        ledger=ledger,
+        contract_loader=loader,
+        app_client=app_client,
+        capability_discovery=discovery,
+    )
     return RuntimeContainer(
         planner=PlannerService(
             provider=FakePlanProvider(provider_status=provider_status),
@@ -224,12 +233,8 @@ def runtime_with_loader(loader: QuantSuiteContractLoader) -> RuntimeContainer:
         ),
         confirmation=ConfirmationService(ledger=ledger),
         action_request=ActionRequestPreviewService(ledger=ledger, contract_loader=loader),
-        execution=ExecutionService(
-            ledger=ledger,
-            contract_loader=loader,
-            app_client=app_client,
-            capability_discovery=discovery,
-        ),
+        execution=execution,
+        retry=RetryService(ledger=ledger, execution=execution, app_client=app_client),
         run_status=RunStatusService(ledger=ledger),
         orchestration=OrchestrationService(ledger=ledger),
         plan_revision=PlanRevisionService(
@@ -241,6 +246,11 @@ def runtime_with_loader(loader: QuantSuiteContractLoader) -> RuntimeContainer:
         plan_revision_activation=PlanRevisionActivationService(
             ledger=ledger,
             contract_loader=loader,
+        ),
+        revalidation=RunRevalidationService(ledger=ledger),
+        sample_autopilot=SampleAutopilotPreviewService(
+            ledger=ledger,
+            sample_workspace_root=QUANT_SUITE_ROOT / "fixtures" / "sample_workspaces",
         ),
         contract_loader=loader,
         capability_discovery=discovery,

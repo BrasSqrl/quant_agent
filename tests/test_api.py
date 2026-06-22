@@ -28,8 +28,11 @@ from quant_agent_runtime.plan_revision import PlanRevisionService
 from quant_agent_runtime.plan_revision_activation import PlanRevisionActivationService
 from quant_agent_runtime.planner import PlannerService
 from quant_agent_runtime.preflight import PreflightService
+from quant_agent_runtime.revalidation import RunRevalidationService
+from quant_agent_runtime.retry import RetryService
 from quant_agent_runtime.runtime import RuntimeContainer
 from quant_agent_runtime.run_status import RunStatusService
+from quant_agent_runtime.sample_autopilot import SampleAutopilotPreviewService
 
 
 AGENT_ROOT = Path(__file__).resolve().parents[1]
@@ -144,12 +147,19 @@ def runtime_with_preflight_client(
     app_client: FakePreflightAppClient,
     *,
     ledger: InMemoryLedger | None = None,
+    sample_workspace_root: Path | None = None,
 ) -> RuntimeContainer:
     loader = QuantSuiteContractLoader(QUANT_SUITE_ROOT)
     capabilities = loader.load_agent_capabilities()
     provider_status = loader.load_agent_provider_status()
     ledger = ledger or InMemoryLedger()
     discovery = CapabilityDiscoveryService(contract_loader=loader, app_client=app_client)
+    execution = ExecutionService(
+        ledger=ledger,
+        contract_loader=loader,
+        app_client=app_client,
+        capability_discovery=discovery,
+    )
     return RuntimeContainer(
         planner=PlannerService(
             provider=FakePlanProvider(provider_status=provider_status),
@@ -164,12 +174,8 @@ def runtime_with_preflight_client(
         ),
         confirmation=ConfirmationService(ledger=ledger),
         action_request=ActionRequestPreviewService(ledger=ledger, contract_loader=loader),
-        execution=ExecutionService(
-            ledger=ledger,
-            contract_loader=loader,
-            app_client=app_client,
-            capability_discovery=discovery,
-        ),
+        execution=execution,
+        retry=RetryService(ledger=ledger, execution=execution, app_client=app_client),
         run_status=RunStatusService(ledger=ledger, capability_discovery=discovery),
         orchestration=OrchestrationService(ledger=ledger),
         plan_revision=PlanRevisionService(
@@ -181,6 +187,11 @@ def runtime_with_preflight_client(
         plan_revision_activation=PlanRevisionActivationService(
             ledger=ledger,
             contract_loader=loader,
+        ),
+        revalidation=RunRevalidationService(ledger=ledger),
+        sample_autopilot=SampleAutopilotPreviewService(
+            ledger=ledger,
+            sample_workspace_root=sample_workspace_root or QUANT_SUITE_ROOT / "fixtures" / "sample_workspaces",
         ),
         contract_loader=loader,
         capability_discovery=discovery,
@@ -478,21 +489,79 @@ def _create_plan_with_lifecycle_reference(client: TestClient) -> dict[str, Any]:
         "/plans",
         json={
             "user_goal": "Build a conservative PD scorecard plan.",
-            "context_summary": {
-                "lifecycle_summary": {
-                    "lifecycle_id": "lifecycle_test",
-                    "state": "ready_for_modeling",
-                    "summary": "Lifecycle has safe source and target summaries.",
-                },
-                "source_summary": "Development sample is registered.",
-                "target_summary": "Default flag is the candidate target.",
-                "package_summary": "No documentation package exists yet.",
-                "bundle_summary": "Monitoring bundle is available.",
-            },
+            "context_summary": _safe_lifecycle_context(),
         },
     )
     assert response.status_code == 200
     return response.json()
+
+
+def _safe_lifecycle_context(
+    *,
+    lifecycle_state: str = "ready_for_modeling",
+    lifecycle_summary: str = "Lifecycle has safe source and target summaries.",
+) -> dict[str, Any]:
+    return {
+        "lifecycle_summary": {
+            "lifecycle_id": "lifecycle_test",
+            "state": lifecycle_state,
+            "summary": lifecycle_summary,
+        },
+        "source_summary": "Development sample is registered.",
+        "target_summary": "Default flag is the candidate target.",
+        "package_summary": "No documentation package exists yet.",
+        "bundle_summary": "Monitoring bundle is available.",
+    }
+
+
+def _safe_sample_lifecycle_context(
+    *,
+    sample_workspace_id: str = "credit_pd_scorecard_panel",
+    sample_owned: bool = True,
+    lifecycle_id: str = "sample_credit_pd_scorecard_panel",
+) -> dict[str, Any]:
+    context = _safe_lifecycle_context(
+        lifecycle_state="retrain_recommended",
+        lifecycle_summary="Credit PD sample lifecycle has safe seeded evidence.",
+    )
+    context["lifecycle_summary"] = {
+        **context["lifecycle_summary"],
+        "lifecycle_id": lifecycle_id,
+        "sample_workspace": {
+            "sample_workspace": True,
+            "sample_workspace_id": sample_workspace_id,
+            "sample_owned": sample_owned,
+        },
+    }
+    context["package_summary"] = {
+        "documentation_packages": [
+            {
+                "reference_id": "sample_credit_pd_documentation_package",
+                "label": "Sample methodology package",
+                "status": "available",
+                "summary": "Safe documentation package summary is available.",
+            }
+        ],
+        "documentation_drafts": [
+            {
+                "reference_id": "sample_credit_pd_documentation_draft",
+                "label": "Sample methodology draft",
+                "status": "available",
+                "summary": "Safe draft summary is available.",
+            }
+        ],
+    }
+    context["bundle_summary"] = {
+        "monitoring_bundles": [
+            {
+                "reference_id": "sample_credit_pd_monitoring_bundle",
+                "label": "Sample monitoring bundle",
+                "status": "available",
+                "summary": "Safe monitoring bundle summary is available.",
+            }
+        ],
+    }
+    return context
 
 
 def _create_plan_with_documentation_package_reference(client: TestClient) -> dict[str, Any]:
@@ -689,6 +758,7 @@ def test_runtime_manifest_returns_supported_modes() -> None:
     assert "POST /confirmations" in manifest["supported_routes"]
     assert "POST /action-requests" in manifest["supported_routes"]
     assert "POST /executions" in manifest["supported_routes"]
+    assert "POST /retries" in manifest["supported_routes"]
     assert "GET /runs" in manifest["supported_routes"]
     assert "GET /runs/{run_id}" in manifest["supported_routes"]
     assert "GET /runs/{run_id}/orchestration" in manifest["supported_routes"]
@@ -698,13 +768,18 @@ def test_runtime_manifest_returns_supported_modes() -> None:
     assert "POST /resumptions" in manifest["supported_routes"]
     assert "POST /plan-revisions" in manifest["supported_routes"]
     assert "POST /plan-revision-activations" in manifest["supported_routes"]
+    assert "POST /run-revalidations" in manifest["supported_routes"]
+    assert "POST /autopilot-previews" in manifest["supported_routes"]
     assert manifest["runtime_health_endpoint"] == "/health"
     assert manifest["execution_support_level"] == "single_step_review_draft_actions_only"
     assert manifest["ledger_support_level"] == "local_json_file_backed"
     assert manifest["recovery_support_level"] == "manual_pause_resume_only"
     assert manifest["orchestration_support_level"] == "manual_guided_existing_steps_only"
+    assert manifest["retry_support_level"] == "manual_current_step_only"
     assert manifest["plan_revision_support_level"] == "manual_preview_only"
     assert manifest["plan_revision_activation_support_level"] == "manual_child_run_only"
+    assert manifest["revalidation_support_level"] == "manual_context_check_only"
+    assert manifest["autopilot_support_level"] == "sample_owned_dry_run_preview_only"
     assert manifest["ledger_storage"]["storage_mode"] == "memory"
     assert manifest["provider_status"]["supports_execution"] is False
     assert manifest["provider_status"]["hosted_provider_enabled"] is False
@@ -2634,6 +2709,330 @@ def test_execution_duplicate_after_failure_returns_existing_failure_without_call
     assert len(entry.action_results) == 1
 
 
+def test_retry_retries_recoverable_studio_failure_and_validates_ledger() -> None:
+    app_client = FakePreflightAppClient(
+        execution_error=AppClientError("Quant Studio execution app is unavailable.", status_code=503)
+    )
+    runtime = runtime_with_preflight_client(app_client)
+    client = TestClient(create_app(runtime))
+    plan_payload, studio_step, _preview_payload = _create_confirmed_studio_preview(client)
+    execution = client.post(
+        "/executions",
+        json={"run_id": plan_payload["run_id"], "step_id": studio_step["step_id"]},
+    )
+    assert execution.status_code == 200
+    assert execution.json()["run_state"] == "failed_recoverable"
+    orchestration = client.get(f"/runs/{plan_payload['run_id']}/orchestration")
+    assert orchestration.status_code == 200
+    assert orchestration.json()["run_state"] == "failed_recoverable"
+    assert orchestration.json()["allowed_next_actions"] == ["cancel_run", "retry_failed_step"]
+
+    app_client.execution_error = None
+    retry = client.post(
+        "/retries",
+        json={
+            "run_id": plan_payload["run_id"],
+            "step_id": studio_step["step_id"],
+            "retry_intent": "retry_failed_step",
+        },
+    )
+    duplicate = client.post(
+        "/retries",
+        json={
+            "run_id": plan_payload["run_id"],
+            "step_id": studio_step["step_id"],
+            "retry_intent": "retry_failed_step",
+        },
+    )
+
+    assert retry.status_code == 200
+    assert duplicate.status_code == 200
+    payload = retry.json()
+    assert duplicate.json()["action_result"] == payload["action_result"]
+    assert payload["retry_event"]["event_type"] == "retry"
+    assert payload["retry_event"]["status"] == "retried"
+    assert payload["retry_event"]["execution_permitted"] is False
+    assert payload["retry_event"]["failed_action_run_id"] == execution.json()["action_result"]["action_run_id"]
+    assert payload["action_request"]["retry_request"] is True
+    assert payload["action_request"]["retry_intent"] == "retry_failed_step"
+    assert payload["action_request"]["retry_source_action_run_id"] == (
+        execution.json()["action_result"]["action_run_id"]
+    )
+    assert payload["action_request"]["execution_permitted"] is True
+    assert payload["action_result"]["execution_status"] == "succeeded"
+    assert payload["run_state"] == "waiting_for_confirmation"
+    assert payload["orchestration"]["run_state"] == "waiting_for_confirmation"
+    assert len(app_client.execution_calls) == 2
+    assert app_client.execution_calls[-1]["payload"] == {"action_request": payload["action_request"]}
+    entry = runtime.planner.ledger.list_entries()[0]
+    assert [event["event_type"] for event in entry.recovery_events] == ["retry"]
+    assert len(entry.action_results) == 2
+    assert len(entry.action_requests) == 3
+    runtime.contract_loader.validate_agent_contract_payload(
+        entry.action_requests[-1],
+        "agent_action_request.v1.schema.json",
+    )
+    runtime.contract_loader.validate_agent_contract_payload(
+        entry.action_results[-1],
+        "agent_action_result.v1.schema.json",
+    )
+    runtime.contract_loader.validate_agent_contract_payload(
+        entry.model_dump(mode="json"),
+        "agent_execution_ledger.v1.schema.json",
+    )
+
+
+def test_retry_retries_recoverable_documentation_failure() -> None:
+    app_client = FakePreflightAppClient()
+    runtime = runtime_with_preflight_client(app_client)
+    client = TestClient(create_app(runtime))
+    plan_payload, documentation_step, _preview_payload = _create_confirmed_documentation_preview(client)
+
+    app_client.execution_error = AppClientError(
+        "Quant Documentation execution app is unavailable.",
+        status_code=503,
+    )
+    failed = client.post(
+        "/executions",
+        json={"run_id": plan_payload["run_id"], "step_id": documentation_step["step_id"]},
+    )
+    assert failed.status_code == 200
+    assert failed.json()["run_state"] == "failed_recoverable"
+
+    app_client.execution_error = None
+    retry = client.post(
+        "/retries",
+        json={
+            "run_id": plan_payload["run_id"],
+            "step_id": documentation_step["step_id"],
+            "retry_intent": "retry_failed_step",
+        },
+    )
+
+    assert retry.status_code == 200
+    payload = retry.json()
+    assert payload["capability_id"] == "quant_documentation.create_draft_workspace"
+    assert payload["action_request"]["capability_id"] == "quant_documentation.create_draft_workspace"
+    assert payload["action_result"]["execution_status"] == "succeeded"
+    assert payload["action_result"]["output_references"][0]["reference_type"] == "documentation_draft"
+
+
+def test_retry_rejects_invalid_states_and_non_retryable_failures() -> None:
+    runtime = runtime_with_preflight_client(FakePreflightAppClient())
+    client = TestClient(create_app(runtime))
+    plan_payload, studio_step, _preview_payload = _create_confirmed_studio_preview(client)
+
+    unknown_run = client.post(
+        "/retries",
+        json={"run_id": "missing_run", "step_id": studio_step["step_id"], "retry_intent": "retry_failed_step"},
+    )
+    extra_payload = client.post(
+        "/retries",
+        json={
+            "run_id": plan_payload["run_id"],
+            "step_id": studio_step["step_id"],
+            "retry_intent": "retry_failed_step",
+            "action_input": {"target_summary": "browser supplied"},
+        },
+    )
+    no_failure = client.post(
+        "/retries",
+        json={
+            "run_id": plan_payload["run_id"],
+            "step_id": studio_step["step_id"],
+            "retry_intent": "retry_failed_step",
+        },
+    )
+
+    assert client.post(
+        "/executions",
+        json={"run_id": plan_payload["run_id"], "step_id": studio_step["step_id"]},
+    ).status_code == 200
+    completed_retry = client.post(
+        "/retries",
+        json={
+            "run_id": plan_payload["run_id"],
+            "step_id": studio_step["step_id"],
+            "retry_intent": "retry_failed_step",
+        },
+    )
+
+    terminal_app = FakePreflightAppClient(execution_response=_valid_action_result("failed_terminal"))
+    terminal_runtime = runtime_with_preflight_client(terminal_app)
+    terminal_client = TestClient(create_app(terminal_runtime))
+    terminal_plan, terminal_step, _terminal_preview = _create_confirmed_studio_preview(terminal_client)
+    assert terminal_client.post(
+        "/executions",
+        json={"run_id": terminal_plan["run_id"], "step_id": terminal_step["step_id"]},
+    ).status_code == 200
+    terminal_retry = terminal_client.post(
+        "/retries",
+        json={
+            "run_id": terminal_plan["run_id"],
+            "step_id": terminal_step["step_id"],
+            "retry_intent": "retry_failed_step",
+        },
+    )
+
+    no_retry_result = _valid_action_result("failed_recoverable")
+    no_retry_result["retry_allowed"] = False
+    no_retry_app = FakePreflightAppClient(execution_response=no_retry_result)
+    no_retry_runtime = runtime_with_preflight_client(no_retry_app)
+    no_retry_client = TestClient(create_app(no_retry_runtime))
+    no_retry_plan, no_retry_step, _no_retry_preview = _create_confirmed_studio_preview(no_retry_client)
+    assert no_retry_client.post(
+        "/executions",
+        json={"run_id": no_retry_plan["run_id"], "step_id": no_retry_step["step_id"]},
+    ).status_code == 200
+    no_retry_response = no_retry_client.post(
+        "/retries",
+        json={
+            "run_id": no_retry_plan["run_id"],
+            "step_id": no_retry_step["step_id"],
+            "retry_intent": "retry_failed_step",
+        },
+    )
+
+    assert unknown_run.status_code == 422
+    assert unknown_run.json()["detail"]["errors"][0]["code"] == "unknown_run"
+    assert extra_payload.status_code == 422
+    assert no_failure.status_code == 422
+    assert no_failure.json()["detail"]["errors"][0]["code"] == "orchestration_action_not_allowed"
+    assert completed_retry.status_code == 422
+    assert completed_retry.json()["detail"]["errors"][0]["code"] == "orchestration_step_not_current"
+    assert terminal_retry.status_code == 422
+    assert terminal_retry.json()["detail"]["errors"][0]["code"] == "terminal_run_retry"
+    assert no_retry_response.status_code == 422
+    assert no_retry_response.json()["detail"]["errors"][0]["code"] == (
+        "orchestration_action_not_allowed"
+    )
+
+
+def test_retry_revalidates_capabilities_and_ledgers_safe_retry_failures() -> None:
+    unavailable_app = FakePreflightAppClient(
+        execution_error=AppClientError("Quant Studio execution app is unavailable.", status_code=503)
+    )
+    unavailable_runtime = runtime_with_preflight_client(unavailable_app)
+    unavailable_client = TestClient(create_app(unavailable_runtime))
+    plan_payload, studio_step, _preview_payload = _create_confirmed_studio_preview(unavailable_client)
+    assert unavailable_client.post(
+        "/executions",
+        json={"run_id": plan_payload["run_id"], "step_id": studio_step["step_id"]},
+    ).status_code == 200
+    unavailable_app.execution_error = None
+    unavailable_app.discovery_errors_by_app["quant_studio"] = AppClientError(
+        "Quant Studio capability discovery app is unavailable.",
+        status_code=503,
+    )
+    unavailable_retry = unavailable_client.post(
+        "/retries",
+        json={
+            "run_id": plan_payload["run_id"],
+            "step_id": studio_step["step_id"],
+            "retry_intent": "retry_failed_step",
+        },
+    )
+
+    malformed_app = FakePreflightAppClient(
+        execution_error=AppClientError("Quant Studio execution app is unavailable.", status_code=503)
+    )
+    malformed_runtime = runtime_with_preflight_client(malformed_app)
+    malformed_client = TestClient(create_app(malformed_runtime))
+    malformed_plan, malformed_step, _malformed_preview = _create_confirmed_studio_preview(malformed_client)
+    assert malformed_client.post(
+        "/executions",
+        json={"run_id": malformed_plan["run_id"], "step_id": malformed_step["step_id"]},
+    ).status_code == 200
+    malformed_app.execution_error = None
+    malformed_response = _valid_action_result()
+    malformed_response.pop("action_run_id")
+    malformed_app.execution_response = malformed_response
+    malformed_retry = malformed_client.post(
+        "/retries",
+        json={
+            "run_id": malformed_plan["run_id"],
+            "step_id": malformed_step["step_id"],
+            "retry_intent": "retry_failed_step",
+        },
+    )
+
+    unsafe_app = FakePreflightAppClient(
+        execution_error=AppClientError("Quant Studio execution app is unavailable.", status_code=503)
+    )
+    unsafe_runtime = runtime_with_preflight_client(unsafe_app)
+    unsafe_client = TestClient(create_app(unsafe_runtime))
+    unsafe_plan, unsafe_step, _unsafe_preview = _create_confirmed_studio_preview(unsafe_client)
+    assert unsafe_client.post(
+        "/executions",
+        json={"run_id": unsafe_plan["run_id"], "step_id": unsafe_step["step_id"]},
+    ).status_code == 200
+    unsafe_app.execution_error = None
+    unsafe_response = _valid_action_result()
+    unsafe_response["raw_path"] = "C:\\Users\\matth\\Desktop\\private\\raw.csv"
+    unsafe_app.execution_response = unsafe_response
+    unsafe_retry = unsafe_client.post(
+        "/retries",
+        json={
+            "run_id": unsafe_plan["run_id"],
+            "step_id": unsafe_step["step_id"],
+            "retry_intent": "retry_failed_step",
+        },
+    )
+
+    app_failure = FakePreflightAppClient(
+        execution_error=AppClientError("Quant Studio execution app is unavailable.", status_code=503)
+    )
+    app_failure_runtime = runtime_with_preflight_client(app_failure)
+    app_failure_client = TestClient(create_app(app_failure_runtime))
+    app_failure_plan, app_failure_step, _app_failure_preview = _create_confirmed_studio_preview(
+        app_failure_client
+    )
+    assert app_failure_client.post(
+        "/executions",
+        json={"run_id": app_failure_plan["run_id"], "step_id": app_failure_step["step_id"]},
+    ).status_code == 200
+    app_failure.execution_error = AppClientError(
+        "Quant Studio retry app is unavailable.",
+        status_code=503,
+    )
+    app_failure_retry = app_failure_client.post(
+        "/retries",
+        json={
+            "run_id": app_failure_plan["run_id"],
+            "step_id": app_failure_step["step_id"],
+            "retry_intent": "retry_failed_step",
+        },
+    )
+
+    assert unavailable_retry.status_code == 422
+    assert unavailable_retry.json()["detail"]["errors"][0]["code"] == "execution_app_unavailable"
+    assert malformed_retry.status_code == 200
+    assert malformed_retry.json()["action_result"]["execution_status"] == "failed_terminal"
+    assert malformed_retry.json()["action_result"]["terminal_errors"][0]["code"] == (
+        "malformed_app_action_result"
+    )
+    assert unsafe_retry.status_code == 200
+    assert unsafe_retry.json()["action_result"]["execution_status"] == "failed_terminal"
+    assert unsafe_retry.json()["action_result"]["terminal_errors"][0]["code"] == (
+        "unsafe_app_action_result"
+    )
+    assert "private\\raw.csv" not in unsafe_retry.text
+    assert app_failure_retry.status_code == 200
+    assert app_failure_retry.json()["action_result"]["execution_status"] == "failed_recoverable"
+    assert app_failure_retry.json()["action_result"]["retry_allowed"] is False
+    for runtime in [malformed_runtime, unsafe_runtime, app_failure_runtime]:
+        entry = runtime.planner.ledger.list_entries()[0]
+        assert len(entry.recovery_events) == 1
+        runtime.contract_loader.validate_agent_contract_payload(
+            entry.action_results[-1],
+            "agent_action_result.v1.schema.json",
+        )
+        runtime.contract_loader.validate_agent_contract_payload(
+            entry.model_dump(mode="json"),
+            "agent_execution_ledger.v1.schema.json",
+        )
+
+
 def test_cancellation_is_ledgered_idempotent_and_blocks_further_actions() -> None:
     runtime = runtime_with_preflight_client(FakePreflightAppClient())
     client = TestClient(create_app(runtime))
@@ -3164,6 +3563,522 @@ def test_pause_rejects_unsafe_reason_without_leaking_value() -> None:
     assert response.status_code == 422
     assert response.json()["detail"]["errors"][0]["code"] == "unsafe_recovery_record"
     assert "private\\raw.csv" not in response.text
+
+
+def test_run_progress_summary_is_returned_on_status_and_orchestration() -> None:
+    runtime = runtime_with_preflight_client(FakePreflightAppClient())
+    client = TestClient(create_app(runtime))
+    plan_payload = _create_plan_with_lifecycle_reference(client)
+    source_step = _step_for_capability(plan_payload, "quant_data.run_source_preflight")
+
+    planned_status = client.get(f"/runs/{plan_payload['run_id']}")
+    planned_orchestration = client.get(f"/runs/{plan_payload['run_id']}/orchestration")
+    preflight = client.post(
+        "/preflights",
+        json={"run_id": plan_payload["run_id"], "step_id": source_step["step_id"]},
+    )
+    post_preflight_status = client.get(f"/runs/{plan_payload['run_id']}")
+
+    assert planned_status.status_code == 200
+    assert planned_orchestration.status_code == 200
+    assert planned_status.json()["run_progress_summary"]["total_steps"] >= 1
+    assert planned_status.json()["run_progress_summary"]["current_step_id"] == source_step["step_id"]
+    assert planned_status.json()["run_progress_summary"]["current_step_status"] == "needs_preflight"
+    assert planned_status.json()["stale_assumption_summary"]["status"] == "not_evaluated"
+    assert planned_orchestration.json()["run_progress_summary"] == planned_status.json()["run_progress_summary"]
+    assert preflight.status_code == 200
+    assert post_preflight_status.json()["run_progress_summary"]["latest_record_counts"]["preflight_records"] == 1
+    assert post_preflight_status.json()["run_progress_summary"]["current_step_status"] == "needs_confirmation"
+
+
+def test_run_revalidation_records_fresh_stale_insufficient_and_paused_summaries() -> None:
+    runtime = runtime_with_preflight_client(FakePreflightAppClient())
+    client = TestClient(create_app(runtime))
+    plan_payload = _create_plan_with_lifecycle_reference(client)
+    run_id = plan_payload["run_id"]
+
+    fresh = client.post(
+        "/run-revalidations",
+        json={
+            "run_id": run_id,
+            "revalidation_intent": "check_current_context",
+            "current_context_summary": _safe_lifecycle_context(),
+        },
+    )
+    stale = client.post(
+        "/run-revalidations",
+        json={
+            "run_id": run_id,
+            "revalidation_intent": "check_current_context",
+            "current_context_summary": _safe_lifecycle_context(
+                lifecycle_state="ready_for_documentation",
+                lifecycle_summary="Lifecycle state changed after planning.",
+            ),
+        },
+    )
+    insufficient = client.post(
+        "/run-revalidations",
+        json={
+            "run_id": run_id,
+            "revalidation_intent": "check_current_context",
+            "current_context_summary": {
+                "lifecycle_summary": {
+                    "lifecycle_id": "lifecycle_test",
+                    "state": "ready_for_modeling",
+                }
+            },
+        },
+    )
+    assert client.post(
+        "/pauses",
+        json={"run_id": run_id, "pause_intent": "pause_run", "reason": "user_paused"},
+    ).status_code == 200
+    paused = client.post(
+        "/run-revalidations",
+        json={
+            "run_id": run_id,
+            "revalidation_intent": "check_current_context",
+            "current_context_summary": _safe_lifecycle_context(),
+        },
+    )
+    status = client.get(f"/runs/{run_id}")
+    orchestration = client.get(f"/runs/{run_id}/orchestration")
+
+    assert fresh.status_code == 200
+    assert fresh.json()["stale_assumption_summary"]["status"] == "fresh"
+    assert fresh.json()["stale_assumption_summary"]["revalidation_required"] is False
+    assert stale.status_code == 200
+    assert stale.json()["stale_assumption_summary"]["status"] == "stale"
+    assert stale.json()["stale_assumption_summary"]["state_changed_since_planning"] is True
+    assert stale.json()["stale_assumption_summary"]["changed_sections"] == ["lifecycle_summary"]
+    assert insufficient.status_code == 200
+    assert insufficient.json()["stale_assumption_summary"]["status"] == "insufficient_context"
+    assert "source_summary" in insufficient.json()["stale_assumption_summary"]["missing_current_sections"]
+    assert paused.status_code == 200
+    assert paused.json()["orchestration"]["run_state"] == "paused"
+    assert paused.json()["run_progress_summary"]["allowed_next_actions"] == ["resume_run", "cancel_run"]
+    assert status.json()["stale_assumption_summary"]["status"] == "fresh"
+    assert orchestration.json()["stale_assumption_summary"]["status"] == "fresh"
+
+    entry = runtime.planner.ledger.get(run_id)
+    assert entry is not None
+    assert [event["event_type"] for event in entry.recovery_events].count("run_revalidation") == 4
+    assert entry.recovery_events[-1]["execution_permitted"] is False
+    assert "context_fingerprint" in entry.recovery_events[-1]
+    runtime.contract_loader.validate_agent_contract_payload(
+        entry.model_dump(mode="json"),
+        "agent_execution_ledger.v1.schema.json",
+    )
+
+
+def test_run_revalidation_rejects_unknown_unsafe_cancelled_and_completed_runs() -> None:
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
+    plan_payload = _create_plan_with_lifecycle_reference(client)
+    run_id = plan_payload["run_id"]
+
+    unknown = client.post(
+        "/run-revalidations",
+        json={
+            "run_id": "run_missing",
+            "revalidation_intent": "check_current_context",
+            "current_context_summary": _safe_lifecycle_context(),
+        },
+    )
+    unsafe = client.post(
+        "/run-revalidations",
+        json={
+            "run_id": run_id,
+            "revalidation_intent": "check_current_context",
+            "current_context_summary": {
+                "lifecycle_summary": {"lifecycle_id": "lifecycle_test"},
+                "raw_path": "C:\\Users\\matth\\Desktop\\private\\raw.csv",
+            },
+        },
+    )
+    assert client.post(
+        "/cancellations",
+        json={"run_id": run_id, "cancellation_intent": "cancel_run", "reason": "user_cancelled"},
+    ).status_code == 200
+    cancelled = client.post(
+        "/run-revalidations",
+        json={
+            "run_id": run_id,
+            "revalidation_intent": "check_current_context",
+            "current_context_summary": _safe_lifecycle_context(),
+        },
+    )
+
+    completed_runtime = runtime_with_preflight_client(
+        FakePreflightAppClient(
+            responses_by_capability={
+                "quant_monitoring.validate_bundle": _valid_preflight_response(
+                    capability_id="quant_monitoring.validate_bundle",
+                    app_id="quant_monitoring",
+                )
+            }
+        )
+    )
+    completed_client = TestClient(create_app(completed_runtime))
+    completed_plan = _create_plan_with_lifecycle_reference(completed_client)
+    _advance_to_monitoring_step(completed_client, completed_plan)
+    monitoring_step = _step_for_capability(completed_plan, "quant_monitoring.validate_bundle")
+    assert completed_client.post(
+        "/preflights",
+        json={"run_id": completed_plan["run_id"], "step_id": monitoring_step["step_id"]},
+    ).status_code == 200
+    completed = completed_client.post(
+        "/run-revalidations",
+        json={
+            "run_id": completed_plan["run_id"],
+            "revalidation_intent": "check_current_context",
+            "current_context_summary": _safe_lifecycle_context(),
+        },
+    )
+
+    assert unknown.status_code == 422
+    assert unknown.json()["detail"]["errors"][0]["code"] == "unknown_run"
+    assert unsafe.status_code == 422
+    assert unsafe.json()["detail"]["errors"][0]["code"] == "unsafe_revalidation_context"
+    assert "private\\raw.csv" not in unsafe.text
+    assert cancelled.status_code == 422
+    assert cancelled.json()["detail"]["errors"][0]["code"] == "terminal_run_revalidation"
+    assert completed.status_code == 422
+    assert completed.json()["detail"]["errors"][0]["code"] == "terminal_run_revalidation"
+
+
+def test_sample_autopilot_preview_allows_credit_pd_sample_and_validates_ledger() -> None:
+    runtime = runtime_with_preflight_client(FakePreflightAppClient())
+    client = TestClient(create_app(runtime))
+    response = client.post(
+        "/plans",
+        json={
+            "user_goal": "Preview the sample autopilot path.",
+            "context_summary": _safe_sample_lifecycle_context(),
+        },
+    )
+    assert response.status_code == 200
+    run_id = response.json()["run_id"]
+
+    preview = client.post(
+        "/autopilot-previews",
+        json={
+            "run_id": run_id,
+            "autopilot_intent": "preview_sample_autopilot",
+            "current_context_summary": _safe_sample_lifecycle_context(),
+        },
+    )
+
+    assert preview.status_code == 200
+    payload = preview.json()
+    assert payload["sample_eligibility"]["eligible"] is True
+    assert payload["sample_eligibility"]["sample_workspace_id"] == "credit_pd_scorecard_panel"
+    assert payload["sample_eligibility"]["reset_boundary_available"] is True
+    assert payload["autopilot_preview"]["dry_run_only"] is True
+    assert payload["autopilot_preview"]["autonomous_execution_permitted"] is False
+    assert payload["autopilot_preview"]["steps"][0]["dry_run_action"] == "request_manual_preflight"
+    assert payload["autopilot_preview"]["next_manual_actions"] == ["cancel_run", "run_preflight"]
+    assert payload["ledger_recorded"] is True
+    entry = runtime.planner.ledger.get(run_id)
+    assert entry is not None
+    event = entry.recovery_events[-1]
+    assert event["event_type"] == "sample_autopilot_preview"
+    assert event["status"] == "eligible_previewed"
+    assert event["dry_run_only"] is True
+    assert event["execution_permitted"] is False
+    runtime.contract_loader.validate_agent_contract_payload(
+        entry.model_dump(mode="json"),
+        "agent_execution_ledger.v1.schema.json",
+    )
+
+
+def test_sample_autopilot_preview_reflects_current_gated_orchestration_state() -> None:
+    runtime = runtime_with_preflight_client(FakePreflightAppClient())
+    client = TestClient(create_app(runtime))
+    plan = client.post(
+        "/plans",
+        json={
+            "user_goal": "Preview the sample autopilot path after source preflight.",
+            "context_summary": _safe_sample_lifecycle_context(),
+        },
+    ).json()
+    source_step = plan["plan"]["proposed_steps"][0]
+    assert client.post(
+        "/preflights",
+        json={"run_id": plan["run_id"], "step_id": source_step["step_id"]},
+    ).status_code == 200
+
+    preview = client.post(
+        "/autopilot-previews",
+        json={
+            "run_id": plan["run_id"],
+            "autopilot_intent": "preview_sample_autopilot",
+            "current_context_summary": _safe_sample_lifecycle_context(),
+        },
+    )
+
+    assert preview.status_code == 200
+    payload = preview.json()
+    studio_step = next(
+        step
+        for step in payload["autopilot_preview"]["steps"]
+        if step["capability_id"] == "quant_studio.prepare_model_config_draft"
+    )
+    assert studio_step["status"] == "needs_confirmation"
+    assert studio_step["dry_run_action"] == "request_manual_confirmation"
+    assert payload["autopilot_preview"]["next_manual_actions"] == ["cancel_run", "confirm_step"]
+
+
+def test_sample_autopilot_preview_returns_blocked_for_non_sample_and_invalid_sample_contexts(
+    tmp_path: Path,
+) -> None:
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
+    user_plan = _create_plan_with_lifecycle_reference(client)
+
+    user_owned = client.post(
+        "/autopilot-previews",
+        json={
+            "run_id": user_plan["run_id"],
+            "autopilot_intent": "preview_sample_autopilot",
+            "current_context_summary": _safe_lifecycle_context(),
+        },
+    )
+    assert user_owned.status_code == 200
+    assert user_owned.json()["sample_eligibility"]["status"] == "blocked"
+    assert any(
+        "sample_workspace_id" in blocker
+        for blocker in user_owned.json()["sample_eligibility"]["blockers"]
+    )
+
+    non_allowlisted_plan = client.post(
+        "/plans",
+        json={
+            "user_goal": "Preview a non-allowlisted sample.",
+            "context_summary": _safe_sample_lifecycle_context(sample_workspace_id="monitoring_drift_review"),
+        },
+    ).json()
+    non_allowlisted = client.post(
+        "/autopilot-previews",
+        json={
+            "run_id": non_allowlisted_plan["run_id"],
+            "autopilot_intent": "preview_sample_autopilot",
+            "current_context_summary": _safe_sample_lifecycle_context(sample_workspace_id="monitoring_drift_review"),
+        },
+    )
+    assert non_allowlisted.status_code == 200
+    assert non_allowlisted.json()["sample_eligibility"]["status"] == "blocked"
+    assert any(
+        "not allowlisted" in blocker
+        for blocker in non_allowlisted.json()["sample_eligibility"]["blockers"]
+    )
+
+    stale_plan = client.post(
+        "/plans",
+        json={
+            "user_goal": "Preview a mismatched sample.",
+            "context_summary": _safe_sample_lifecycle_context(),
+        },
+    ).json()
+    mismatch = client.post(
+        "/autopilot-previews",
+        json={
+            "run_id": stale_plan["run_id"],
+            "autopilot_intent": "preview_sample_autopilot",
+            "current_context_summary": _safe_sample_lifecycle_context(sample_workspace_id="monitoring_drift_review"),
+        },
+    )
+    assert mismatch.status_code == 200
+    assert mismatch.json()["sample_eligibility"]["status"] == "blocked"
+    assert any(
+        "does not match" in blocker
+        for blocker in mismatch.json()["sample_eligibility"]["blockers"]
+    )
+
+    sample_root = tmp_path / "samples"
+    sample_dir = sample_root / "credit_pd_scorecard_panel"
+    sample_dir.mkdir(parents=True)
+    (sample_dir / "sample_workspace.v1.json").write_text(
+        json.dumps(
+            {
+                "sample_workspace_id": "credit_pd_scorecard_panel",
+                "label": "Credit Risk PD Scorecard",
+                "owned_marker": {
+                    "sample_workspace": True,
+                    "sample_workspace_id": "credit_pd_scorecard_panel",
+                    "sample_owned": True,
+                },
+                "lifecycle_id": "sample_credit_pd_scorecard_panel",
+                "reset_scope": {"sample_owned_only": False},
+            }
+        ),
+        encoding="utf-8",
+    )
+    missing_reset_runtime = runtime_with_preflight_client(
+        FakePreflightAppClient(),
+        sample_workspace_root=sample_root,
+    )
+    missing_reset_client = TestClient(create_app(missing_reset_runtime))
+    missing_reset_plan = missing_reset_client.post(
+        "/plans",
+        json={
+            "user_goal": "Preview a sample without reset boundary.",
+            "context_summary": _safe_sample_lifecycle_context(),
+        },
+    ).json()
+    missing_reset = missing_reset_client.post(
+        "/autopilot-previews",
+        json={
+            "run_id": missing_reset_plan["run_id"],
+            "autopilot_intent": "preview_sample_autopilot",
+            "current_context_summary": _safe_sample_lifecycle_context(),
+        },
+    )
+    assert missing_reset.status_code == 200
+    assert missing_reset.json()["sample_eligibility"]["status"] == "blocked"
+    assert any(
+        "safe reset boundary" in blocker
+        for blocker in missing_reset.json()["sample_eligibility"]["blockers"]
+    )
+
+
+def test_sample_autopilot_preview_blocks_paused_terminal_unsafe_and_stale_capability_runs() -> None:
+    runtime = runtime_with_preflight_client(FakePreflightAppClient())
+    client = TestClient(create_app(runtime))
+    plan = client.post(
+        "/plans",
+        json={
+            "user_goal": "Preview blocked sample autopilot states.",
+            "context_summary": _safe_sample_lifecycle_context(),
+        },
+    ).json()
+    run_id = plan["run_id"]
+
+    unsafe = client.post(
+        "/autopilot-previews",
+        json={
+            "run_id": run_id,
+            "autopilot_intent": "preview_sample_autopilot",
+            "current_context_summary": {
+                **_safe_sample_lifecycle_context(),
+                "raw_local_path": "C:\\private\\rows.csv",
+            },
+        },
+    )
+    assert unsafe.status_code == 200
+    assert unsafe.json()["sample_eligibility"]["status"] == "blocked"
+    assert "private\\rows.csv" not in unsafe.text
+    assert any(
+        "unsafe fields" in blocker
+        for blocker in unsafe.json()["sample_eligibility"]["blockers"]
+    )
+
+    paused = client.post(
+        "/pauses",
+        json={"run_id": run_id, "pause_intent": "pause_run", "reason": "user_paused"},
+    )
+    assert paused.status_code == 200
+    paused_preview = client.post(
+        "/autopilot-previews",
+        json={
+            "run_id": run_id,
+            "autopilot_intent": "preview_sample_autopilot",
+            "current_context_summary": _safe_sample_lifecycle_context(),
+        },
+    )
+    assert paused_preview.status_code == 200
+    assert any(
+        "Paused runs" in blocker
+        for blocker in paused_preview.json()["sample_eligibility"]["blockers"]
+    )
+
+    stale_runtime = runtime_with_preflight_client(FakePreflightAppClient())
+    stale_client = TestClient(create_app(stale_runtime))
+    stale_plan = stale_client.post(
+        "/plans",
+        json={
+            "user_goal": "Preview stale capability sample autopilot.",
+            "context_summary": _safe_sample_lifecycle_context(),
+        },
+    ).json()
+    entry = stale_runtime.planner.ledger.get(stale_plan["run_id"])
+    assert entry is not None
+    entry.capability_snapshot[0]["enabled"] = False
+    stale_capability = stale_client.post(
+        "/autopilot-previews",
+        json={
+            "run_id": stale_plan["run_id"],
+            "autopilot_intent": "preview_sample_autopilot",
+            "current_context_summary": _safe_sample_lifecycle_context(),
+        },
+    )
+    assert stale_capability.status_code == 200
+    assert any(
+        "disabled" in blocker
+        for blocker in stale_capability.json()["sample_eligibility"]["blockers"]
+    )
+
+    completed_runtime = runtime_with_preflight_client(
+        FakePreflightAppClient(
+            responses_by_capability={
+                "quant_monitoring.validate_bundle": _valid_preflight_response(
+                    capability_id="quant_monitoring.validate_bundle",
+                    app_id="quant_monitoring",
+                )
+            }
+        )
+    )
+    completed_client = TestClient(create_app(completed_runtime))
+    completed_plan = completed_client.post(
+        "/plans",
+        json={
+            "user_goal": "Preview completed sample autopilot.",
+            "context_summary": _safe_sample_lifecycle_context(),
+        },
+    ).json()
+    _advance_to_monitoring_step(completed_client, completed_plan)
+    monitoring_step = _step_for_capability(completed_plan, "quant_monitoring.validate_bundle")
+    assert completed_client.post(
+        "/preflights",
+        json={"run_id": completed_plan["run_id"], "step_id": monitoring_step["step_id"]},
+    ).status_code == 200
+    completed = completed_client.post(
+        "/autopilot-previews",
+        json={
+            "run_id": completed_plan["run_id"],
+            "autopilot_intent": "preview_sample_autopilot",
+            "current_context_summary": _safe_sample_lifecycle_context(),
+        },
+    )
+    assert completed.status_code == 200
+    assert any(
+        "Terminal or cancelled" in blocker
+        for blocker in completed.json()["sample_eligibility"]["blockers"]
+    )
+
+
+def test_sample_autopilot_preview_rejects_unknown_run_and_extra_payload_fields() -> None:
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
+
+    unknown = client.post(
+        "/autopilot-previews",
+        json={
+            "run_id": "run_missing",
+            "autopilot_intent": "preview_sample_autopilot",
+            "current_context_summary": _safe_sample_lifecycle_context(),
+        },
+    )
+    extra = client.post(
+        "/autopilot-previews",
+        json={
+            "run_id": "run_missing",
+            "autopilot_intent": "preview_sample_autopilot",
+            "current_context_summary": _safe_sample_lifecycle_context(),
+            "execution_flags": {"run": True},
+        },
+    )
+
+    assert unknown.status_code == 422
+    assert unknown.json()["detail"]["errors"][0]["code"] == "unknown_run"
+    assert extra.status_code == 422
 
 
 def test_action_request_rejects_unknown_run_unknown_step_and_browser_action_payload() -> None:

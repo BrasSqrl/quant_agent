@@ -13,6 +13,7 @@ from quant_agent_runtime.models import (
     RunState,
     ValidationIssue,
 )
+from quant_agent_runtime.progress import build_run_progress_summary, latest_stale_assumption_summary
 from quant_agent_runtime.validation.errors import RuntimeValidationError
 
 
@@ -70,6 +71,17 @@ def orchestration_for_entry(entry: LedgerEntry) -> RunOrchestrationResult:
         summaries=summaries,
     )
     allowed_next_actions = _run_allowed_actions(run_state, summaries)
+    plan_id = snapshot.get("plan_id") if isinstance(snapshot.get("plan_id"), str) else None
+    current_step = next((step for step in summaries if step.is_current), None)
+    progress_summary = build_run_progress_summary(
+        entry,
+        run_state=run_state,
+        final_status=entry.final_status,
+        plan_id=plan_id,
+        current_step=current_step,
+        steps=summaries,
+        allowed_next_actions=allowed_next_actions,
+    )
     return RunOrchestrationResult(
         run_id=entry.run_id,
         parent_run_id=entry.parent_run_id,
@@ -78,11 +90,13 @@ def orchestration_for_entry(entry: LedgerEntry) -> RunOrchestrationResult:
         child_run_ids=entry.child_run_ids,
         run_state=run_state,
         final_status=entry.final_status,
-        plan_id=snapshot.get("plan_id") if isinstance(snapshot.get("plan_id"), str) else None,
+        plan_id=plan_id,
         current_step_id=current_step_id,
         steps=summaries,
         allowed_next_actions=allowed_next_actions,
         ledger_summary=ledger_summary(entry),
+        run_progress_summary=progress_summary,
+        stale_assumption_summary=latest_stale_assumption_summary(entry),
         validation=PlanValidationResult(status="valid"),
     )
 
@@ -210,7 +224,7 @@ def _step_summary(
             latest_action_result=latest_action_result,
         )
 
-    allowed_actions = _step_allowed_actions(status)
+    allowed_actions = _step_allowed_actions(status, latest_action_result=latest_action_result)
     return OrchestrationStepSummary(
         step_id=step_id,
         capability_id=capability_id,
@@ -248,7 +262,9 @@ def _ready_status(
         if status == "succeeded_with_warnings":
             return "completed_with_warnings", None, None
         if status == "failed_recoverable":
-            return "failed_recoverable", "recovery", "The latest action result is recoverable but retry is not available in this slice."
+            if latest_action_result.get("retry_allowed") is True:
+                return "failed_recoverable", "retry", "Retry the latest recoverable failed action result or create a plan revision."
+            return "failed_recoverable", "recovery", "The latest action result is recoverable but does not allow retry."
         if status == "failed_terminal":
             return "failed_terminal", "recovery", "The latest action result is terminal for this run."
 
@@ -324,7 +340,11 @@ def _run_allowed_actions(run_state: RunState, summaries: list[OrchestrationStepS
     return actions
 
 
-def _step_allowed_actions(status: str) -> list[str]:
+def _step_allowed_actions(
+    status: str,
+    *,
+    latest_action_result: dict[str, Any] | None = None,
+) -> list[str]:
     if status in {"needs_preflight", "preflight_blocked"}:
         return ["run_preflight"]
     if status == "needs_confirmation":
@@ -333,6 +353,12 @@ def _step_allowed_actions(status: str) -> list[str]:
         return ["preview_action_request"]
     if status == "ready_for_execution":
         return ["preview_action_request", "execute_step"]
+    if (
+        status == "failed_recoverable"
+        and isinstance(latest_action_result, dict)
+        and latest_action_result.get("retry_allowed") is True
+    ):
+        return ["retry_failed_step"]
     return []
 
 

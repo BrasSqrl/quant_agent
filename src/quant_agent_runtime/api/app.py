@@ -27,10 +27,16 @@ from quant_agent_runtime.models import (
     PlanResult,
     ResumptionRequest,
     ResumptionResult,
+    RetryRequest,
+    RetryResult,
+    RunRevalidationRequest,
+    RunRevalidationResult,
     RunListResult,
     RunOrchestrationResult,
     RunStatusResult,
     RuntimeManifest,
+    SampleAutopilotPreviewRequest,
+    SampleAutopilotPreviewResult,
 )
 from quant_agent_runtime.runtime import RuntimeContainer, build_runtime
 from quant_agent_runtime.validation.errors import RuntimeValidationError
@@ -118,6 +124,13 @@ def create_app(runtime: RuntimeContainer | None = None) -> FastAPI:
         except RuntimeValidationError as exc:
             raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
 
+    @api.post("/retries", response_model=RetryResult)
+    def retry_execution(request: RetryRequest) -> RetryResult:
+        try:
+            return runtime_container.retry.retry_step(request)
+        except RuntimeValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
+
     @api.get("/runs", response_model=RunListResult)
     def list_runs(
         lifecycle_id: str | None = None,
@@ -190,6 +203,20 @@ def create_app(runtime: RuntimeContainer | None = None) -> FastAPI:
     def activate_plan_revision(request: PlanRevisionActivationRequest) -> PlanRevisionActivationResult:
         try:
             return runtime_container.plan_revision_activation.activate_revision(request)
+        except RuntimeValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
+
+    @api.post("/run-revalidations", response_model=RunRevalidationResult)
+    def revalidate_run(request: RunRevalidationRequest) -> RunRevalidationResult:
+        try:
+            return runtime_container.revalidation.check_current_context(request)
+        except RuntimeValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
+
+    @api.post("/autopilot-previews", response_model=SampleAutopilotPreviewResult)
+    def preview_sample_autopilot(request: SampleAutopilotPreviewRequest) -> SampleAutopilotPreviewResult:
+        try:
+            return runtime_container.sample_autopilot.preview_autopilot(request)
         except RuntimeValidationError as exc:
             raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
 

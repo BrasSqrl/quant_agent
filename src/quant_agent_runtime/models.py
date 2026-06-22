@@ -294,6 +294,65 @@ class ExecutionResult(StrictModel):
     ledger_recorded: bool
 
 
+class RetryRequest(StrictModel):
+    run_id: str = Field(min_length=1)
+    step_id: str = Field(min_length=1)
+    retry_intent: Literal["retry_failed_step"]
+
+
+class RetryResult(StrictModel):
+    run_id: str
+    step_id: str
+    capability_id: str
+    retry_event: dict[str, Any]
+    action_request: dict[str, Any]
+    action_result: dict[str, Any]
+    run_state: RunState
+    orchestration: RunOrchestrationResult
+    validation: PlanValidationResult
+    ledger_recorded: bool
+
+
+class RunProgressSummary(StrictModel):
+    run_id: str
+    parent_run_id: str | None = None
+    parent_plan_id: str | None = None
+    activated_revision_id: str | None = None
+    child_run_ids: list[str] = Field(default_factory=list)
+    plan_id: str | None = None
+    run_state: RunState
+    final_status: str
+    total_steps: int = 0
+    completed_steps: int = 0
+    completed_with_warnings_steps: int = 0
+    informational_steps: int = 0
+    unsupported_steps: int = 0
+    blocked_steps: int = 0
+    failed_recoverable_steps: int = 0
+    failed_terminal_steps: int = 0
+    not_ready_steps: int = 0
+    current_step_id: str | None = None
+    current_step_title: str | None = None
+    current_step_status: str | None = None
+    current_blocker: str | None = None
+    latest_record_counts: dict[str, int] = Field(default_factory=dict)
+    allowed_next_actions: list[str] = Field(default_factory=list)
+
+
+class StaleAssumptionSummary(StrictModel):
+    status: Literal["not_evaluated", "fresh", "stale", "insufficient_context"] = "not_evaluated"
+    current_context_provided: bool = False
+    state_changed_since_planning: bool = False
+    changed_sections: list[str] = Field(default_factory=list)
+    added_sections: list[str] = Field(default_factory=list)
+    missing_current_sections: list[str] = Field(default_factory=list)
+    original_sections: list[str] = Field(default_factory=list)
+    current_sections: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    revalidation_required: bool = False
+    checked_at_utc: str | None = None
+
+
 class RunStatusResult(StrictModel):
     run_id: str
     parent_run_id: str | None = None
@@ -311,6 +370,8 @@ class RunStatusResult(StrictModel):
     latest_recovery: dict[str, Any] | None = None
     latest_cancellation: dict[str, Any] | None = None
     ledger_summary: dict[str, Any]
+    run_progress_summary: RunProgressSummary
+    stale_assumption_summary: StaleAssumptionSummary
     allowed_next_actions: list[str] = Field(default_factory=list)
     validation: PlanValidationResult
 
@@ -371,6 +432,8 @@ class RunOrchestrationResult(StrictModel):
     steps: list[OrchestrationStepSummary]
     allowed_next_actions: list[str] = Field(default_factory=list)
     ledger_summary: dict[str, Any]
+    run_progress_summary: RunProgressSummary
+    stale_assumption_summary: StaleAssumptionSummary
     validation: PlanValidationResult
 
 
@@ -471,6 +534,78 @@ class PlanRevisionActivationResult(StrictModel):
     ledger_recorded: bool
 
 
+class RunRevalidationRequest(StrictModel):
+    run_id: str = Field(min_length=1)
+    revalidation_intent: Literal["check_current_context"]
+    current_context_summary: dict[str, Any] = Field(default_factory=dict)
+
+
+class RunRevalidationResult(StrictModel):
+    run_id: str
+    run_progress_summary: RunProgressSummary
+    stale_assumption_summary: StaleAssumptionSummary
+    orchestration: RunOrchestrationResult
+    validation: PlanValidationResult
+    ledger_recorded: bool
+
+
+class SampleAutopilotPreviewRequest(StrictModel):
+    run_id: str = Field(min_length=1)
+    autopilot_intent: Literal["preview_sample_autopilot"]
+    current_context_summary: dict[str, Any] = Field(default_factory=dict)
+
+
+class SampleAutopilotEligibility(StrictModel):
+    eligible: bool
+    status: Literal["eligible", "blocked"]
+    sample_workspace_id: str | None = None
+    sample_label: str | None = None
+    lifecycle_id: str | None = None
+    sample_owned: bool = False
+    allowlisted: bool = False
+    reset_boundary_available: bool = False
+    blockers: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    safe_labels: dict[str, Any] = Field(default_factory=dict)
+
+
+class SampleAutopilotPreviewStep(StrictModel):
+    step_id: str
+    capability_id: str
+    app_id: str
+    title: str
+    status: str
+    dry_run_action: str
+    allowed_manual_actions: list[str] = Field(default_factory=list)
+    blocker_reason: str | None = None
+    preflight_required: bool = False
+    confirmation_required: bool = False
+    execution_supported: bool = False
+
+
+class SampleAutopilotPreview(StrictModel):
+    dry_run_only: Literal[True] = True
+    autonomous_execution_permitted: Literal[False] = False
+    sample_workspace_id: str | None = None
+    current_step_id: str | None = None
+    step_count: int = 0
+    blocked_step_count: int = 0
+    next_manual_actions: list[str] = Field(default_factory=list)
+    steps: list[SampleAutopilotPreviewStep] = Field(default_factory=list)
+    blockers: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class SampleAutopilotPreviewResult(StrictModel):
+    run_id: str
+    sample_eligibility: SampleAutopilotEligibility
+    autopilot_preview: SampleAutopilotPreview
+    run_progress_summary: RunProgressSummary
+    orchestration: RunOrchestrationResult
+    validation: PlanValidationResult
+    ledger_recorded: bool
+
+
 class LedgerEntry(StrictModel):
     schema_version: str = "1.0"
     data_policy: Literal["summaries_and_references_only"] = "summaries_and_references_only"
@@ -519,8 +654,11 @@ class RuntimeManifest(StrictModel):
     ledger_storage: dict[str, Any] = Field(default_factory=dict)
     recovery_support_level: str = "not_available"
     orchestration_support_level: str = "not_available"
+    retry_support_level: str = "not_available"
     plan_revision_support_level: str = "not_available"
     plan_revision_activation_support_level: str = "not_available"
+    revalidation_support_level: str = "not_available"
+    autopilot_support_level: str = "not_available"
     plan_only_support_level: str
     execution_support_level: str
     redaction_support_level: str
