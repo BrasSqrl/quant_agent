@@ -26,7 +26,8 @@ def test_runtime_manifest_returns_supported_modes() -> None:
     assert "fake_provider" in manifest["supported_provider_modes"]
     assert "disabled_or_local_fallback" in manifest["supported_provider_modes"]
     assert "POST /plans" in manifest["supported_routes"]
-    assert manifest["temporary_internal_contract_fixtures"] is True
+    assert manifest["runtime_health_endpoint"] == "/health"
+    assert manifest["execution_support_level"] == "not_supported"
 
 
 def test_fake_provider_can_produce_valid_plan() -> None:

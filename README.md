@@ -15,7 +15,7 @@ This first slice is plan-only. It provides:
 - deterministic fake-provider planning for local development and tests
 - code-enforced policy and plan validation
 - safe in-memory ledger entries
-- a contract loader boundary for future `quant_suite` agent contracts
+- a contract loader boundary for canonical `quant_suite` agent contracts
 
 It does not provide execution endpoints, real hosted model calls, app action
 execution, browser provider keys, or app business logic.
@@ -41,14 +41,14 @@ python -m compileall src tests
 
 ## Contract Boundary
 
-The runtime loader looks for future canonical contract drafts under:
+The runtime loader looks for canonical contract drafts under:
 
 1. `QUANT_SUITE_ROOT\contracts`
 2. `..\quant_suite\contracts`
 
 If `agent_*.v1.schema.json` files are not present, the runtime reports that it
-is using temporary internal test fixtures. Those fixtures are only for this
-first implementation slice and must not become the canonical contract source.
+is using temporary internal test fixtures. Those fixtures are fallback test
+fixtures only and must not become the canonical contract source.
 
 ## Safety Boundary
 

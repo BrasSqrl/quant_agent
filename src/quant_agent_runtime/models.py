@@ -167,8 +167,10 @@ class LedgerEntry(StrictModel):
 
 
 class RuntimeManifest(StrictModel):
+    schema_version: str = "1.0"
     service_name: str
     runtime_version: str
+    supported_quant_suite_contract_versions: list[str]
     plan_only_mode: bool
     execution_supported: bool
     supported_routes: list[str]
@@ -176,6 +178,13 @@ class RuntimeManifest(StrictModel):
     supported_model_roles: list[str]
     supported_risk_tiers: list[RiskTier]
     policy_version: str
+    runtime_health_endpoint: str
+    capability_discovery_endpoints: list[str]
+    ledger_support_level: str
+    plan_only_support_level: str
+    execution_support_level: str
+    redaction_support_level: str
+    validation_gates: list[str]
     contract_source: str
     canonical_agent_contracts_loaded: bool
     loaded_agent_contracts: list[str]

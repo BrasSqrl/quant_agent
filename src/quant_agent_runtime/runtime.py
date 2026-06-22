@@ -23,9 +23,11 @@ class RuntimeContainer:
             if contract_result.canonical_agent_contracts_loaded
             else TEMPORARY_AGENT_CONTRACT_FIXTURES
         )
+        contract_versions = [_contract_version_from_name(name) for name in loaded_contracts]
         return RuntimeManifest(
             service_name="quant-agent-runtime",
             runtime_version=__version__,
+            supported_quant_suite_contract_versions=contract_versions,
             plan_only_mode=True,
             execution_supported=False,
             supported_routes=[
@@ -47,6 +49,19 @@ class RuntimeContainer:
                 RiskTier.artifact_export,
             ],
             policy_version="internal-policy.v0",
+            runtime_health_endpoint="/health",
+            capability_discovery_endpoints=[],
+            ledger_support_level="plan_only_in_memory",
+            plan_only_support_level="supported",
+            execution_support_level="not_supported",
+            redaction_support_level="deterministic_context_redaction",
+            validation_gates=[
+                "provider_output_schema_validation",
+                "capability_registry_validation",
+                "policy_validation",
+                "unsafe_context_rejection",
+                "safe_ledger_scan",
+            ],
             contract_source=contract_result.source_label,
             canonical_agent_contracts_loaded=contract_result.canonical_agent_contracts_loaded,
             loaded_agent_contracts=loaded_contracts,
@@ -60,6 +75,12 @@ class RuntimeContainer:
                 "safe_ledger_only",
             ],
         )
+
+
+def _contract_version_from_name(name: str) -> str:
+    if name.endswith(".schema.json"):
+        return name.removesuffix(".schema.json")
+    return name
 
 
 def build_runtime() -> RuntimeContainer:
