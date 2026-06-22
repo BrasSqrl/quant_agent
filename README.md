@@ -13,6 +13,7 @@ This first slice is plan-only. It provides:
 - `GET /runtime/manifest`
 - `POST /plans`
 - deterministic fake-provider planning for local development and tests
+- contract-backed capability loading from `quant_suite` when available
 - code-enforced policy and plan validation
 - safe in-memory ledger entries
 - a contract loader boundary for canonical `quant_suite` agent contracts

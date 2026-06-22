@@ -52,9 +52,11 @@ class CapabilityRegistry:
 
     @classmethod
     def from_request(
-        cls, capabilities: list[CapabilityDefinition] | None
+        cls,
+        capabilities: list[CapabilityDefinition] | None,
+        default_registry: list[CapabilityDefinition] | None = None,
     ) -> "CapabilityRegistry":
-        return cls(capabilities or default_capabilities())
+        return cls(capabilities or default_registry or default_capabilities())
 
     def all(self) -> list[CapabilityDefinition]:
         return list(self._capabilities.values())

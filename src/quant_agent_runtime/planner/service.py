@@ -8,6 +8,7 @@ from quant_agent_runtime.capabilities import CapabilityRegistry
 from quant_agent_runtime.ledger import InMemoryLedger
 from quant_agent_runtime.model_gateway import ModelProvider, ProviderPlanRequest
 from quant_agent_runtime.models import (
+    CapabilityDefinition,
     ConfirmationRequirement,
     LedgerEntry,
     PlanRequest,
@@ -35,10 +36,12 @@ class PlannerService:
         provider: ModelProvider,
         ledger: InMemoryLedger | None = None,
         validator: PlanValidator | None = None,
+        default_capabilities: list[CapabilityDefinition] | None = None,
     ) -> None:
         self._provider = provider
         self._ledger = ledger or InMemoryLedger()
         self._validator = validator or PlanValidator()
+        self._default_capabilities = default_capabilities
 
     @property
     def ledger(self) -> InMemoryLedger:
@@ -59,7 +62,10 @@ class PlannerService:
         )
         redaction_summary = merge_redaction_summaries(goal_redaction, context_redaction)
 
-        registry = CapabilityRegistry.from_request(request.capabilities)
+        registry = CapabilityRegistry.from_request(
+            request.capabilities,
+            default_registry=self._default_capabilities,
+        )
         provider_request = ProviderPlanRequest(
             user_goal=safe_goal,
             context_summary=safe_context,

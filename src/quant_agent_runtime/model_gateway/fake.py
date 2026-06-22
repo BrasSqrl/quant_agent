@@ -11,14 +11,21 @@ from quant_agent_runtime.models import ProviderMetadata, RiskTier
 class FakePlanProvider(ModelProvider):
     def generate_plan(self, request: ProviderPlanRequest) -> ProviderResult:
         steps: list[dict[str, object]] = []
+        missing_inputs: list[str] = []
 
         for index, capability in enumerate(request.capabilities, start=1):
             if not capability.enabled or capability.risk_tier == RiskTier.forbidden:
                 continue
-            action_input = {
-                field: self._safe_field_summary(field, request.context_summary)
-                for field in capability.required_fields
-            }
+            action_input: dict[str, str] = {}
+            for field in capability.required_fields:
+                field_summary = self._safe_field_summary(field, request.context_summary)
+                if field_summary is None:
+                    missing_inputs.append(
+                        f"{capability.capability_id} requires {field}."
+                    )
+                    action_input[field] = "[missing]"
+                else:
+                    action_input[field] = field_summary
             requires_confirmation = (
                 capability.confirmation_required
                 or capability.risk_tier in request.policy.confirmation_required_tiers
@@ -42,7 +49,8 @@ class FakePlanProvider(ModelProvider):
                 }
             )
 
-        missing_inputs = [] if steps else ["No enabled capabilities are available."]
+        if not steps:
+            missing_inputs.append("No enabled capabilities are available.")
         raw_output = {
             "user_goal_summary": self._summarize_goal(request.user_goal),
             "assumptions": [
@@ -63,8 +71,8 @@ class FakePlanProvider(ModelProvider):
     def _summarize_goal(self, user_goal: str) -> str:
         return " ".join(user_goal.strip().split())[:240]
 
-    def _safe_field_summary(self, field: str, context_summary: dict[str, object]) -> str:
+    def _safe_field_summary(self, field: str, context_summary: dict[str, object]) -> str | None:
         value = context_summary.get(field)
         if isinstance(value, str) and value.strip():
             return value[:240]
-        return f"safe_{field}"
+        return None

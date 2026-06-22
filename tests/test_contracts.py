@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from quant_agent_runtime.api import create_app
+from quant_agent_runtime.capabilities import default_capabilities
 from quant_agent_runtime.contracts import QuantSuiteContractLoader
 from quant_agent_runtime.ledger import InMemoryLedger
 from quant_agent_runtime.model_gateway import FakePlanProvider, ModelProvider, ProviderPlanRequest, ProviderResult
@@ -93,8 +94,13 @@ def validate_against_contract(payload: object, schema_name: str) -> None:
 
 
 def runtime_with_loader(loader: QuantSuiteContractLoader) -> RuntimeContainer:
+    capabilities = loader.load_agent_capabilities()
     return RuntimeContainer(
-        planner=PlannerService(provider=FakePlanProvider(), ledger=InMemoryLedger()),
+        planner=PlannerService(
+            provider=FakePlanProvider(),
+            ledger=InMemoryLedger(),
+            default_capabilities=capabilities or None,
+        ),
         contract_loader=loader,
     )
 
@@ -104,6 +110,27 @@ def test_canonical_agent_contracts_are_discovered_from_quant_suite() -> None:
 
     assert result.canonical_agent_contracts_loaded is True
     assert EXPECTED_AGENT_CONTRACTS.issubset(set(result.loaded_agent_contracts))
+
+
+def test_canonical_capability_example_is_loaded_and_mapped() -> None:
+    capabilities = QuantSuiteContractLoader(QUANT_SUITE_ROOT).load_agent_capabilities()
+
+    assert [item.capability_id for item in capabilities] == [
+        "quant_data.run_source_preflight",
+        "quant_studio.prepare_model_config_draft",
+        "quant_documentation.inspect_package",
+        "quant_monitoring.validate_bundle",
+    ]
+    assert capabilities[1].confirmation_required is True
+    assert capabilities[1].required_fields == ["target_summary"]
+
+
+def test_internal_default_capabilities_remain_available_when_canonical_contracts_are_absent() -> None:
+    missing_suite_root = AGENT_ROOT / "__missing_quant_suite_for_contract_test__"
+    capabilities = QuantSuiteContractLoader(missing_suite_root).load_agent_capabilities()
+
+    assert capabilities == []
+    assert default_capabilities()[0].capability_id == "quant_suite.inspect_lifecycle_context"
 
 
 def test_internal_fixtures_are_used_only_when_canonical_contracts_are_absent() -> None:
@@ -150,7 +177,34 @@ def test_fake_provider_plan_validates_against_agent_plan_contract() -> None:
     )
 
     assert response.status_code == 200
-    validate_against_contract(response.json()["plan"], "agent_plan.v1.schema.json")
+    plan = response.json()["plan"]
+    assert [step["app_id"] for step in plan["proposed_steps"]] == [
+        "quant_data",
+        "quant_studio",
+        "quant_documentation",
+        "quant_monitoring",
+    ]
+    validate_against_contract(plan, "agent_plan.v1.schema.json")
+
+
+def test_missing_context_fields_still_produce_schema_valid_blocked_plan() -> None:
+    runtime = runtime_with_loader(QuantSuiteContractLoader(QUANT_SUITE_ROOT))
+    client = TestClient(create_app(runtime))
+
+    response = client.post(
+        "/plans",
+        json={
+            "user_goal": "Build a conservative PD scorecard plan.",
+            "context_summary": {},
+        },
+    )
+
+    assert response.status_code == 200
+    plan = response.json()["plan"]
+    assert plan["status"] == "blocked"
+    assert "quant_data.run_source_preflight requires source_summary." in plan["missing_inputs"]
+    assert plan["proposed_steps"][0]["action_input"]["source_summary"] == "[missing]"
+    validate_against_contract(plan, "agent_plan.v1.schema.json")
 
 
 def test_ledger_entry_validates_against_agent_execution_ledger_contract() -> None:

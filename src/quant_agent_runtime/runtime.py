@@ -85,8 +85,14 @@ def _contract_version_from_name(name: str) -> str:
 
 def build_runtime() -> RuntimeContainer:
     ledger = InMemoryLedger()
-    planner = PlannerService(provider=FakePlanProvider(), ledger=ledger)
+    contract_loader = QuantSuiteContractLoader()
+    canonical_capabilities = contract_loader.load_agent_capabilities()
+    planner = PlannerService(
+        provider=FakePlanProvider(),
+        ledger=ledger,
+        default_capabilities=canonical_capabilities or None,
+    )
     return RuntimeContainer(
         planner=planner,
-        contract_loader=QuantSuiteContractLoader(),
+        contract_loader=contract_loader,
     )
