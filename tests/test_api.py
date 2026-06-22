@@ -28,6 +28,8 @@ def test_runtime_manifest_returns_supported_modes() -> None:
     assert "POST /plans" in manifest["supported_routes"]
     assert manifest["runtime_health_endpoint"] == "/health"
     assert manifest["execution_support_level"] == "not_supported"
+    assert manifest["provider_status"]["supports_execution"] is False
+    assert manifest["provider_status"]["hosted_provider_enabled"] is False
 
 
 def test_fake_provider_can_produce_valid_plan() -> None:
@@ -50,6 +52,11 @@ def test_fake_provider_can_produce_valid_plan() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["validation"]["status"] == "valid"
+    assert payload["provider_metadata"]["supports_execution"] is False
+    assert payload["provider_metadata"]["provider_mode"] in {
+        "fake_provider",
+        "disabled_or_local_fallback",
+    }
     assert payload["plan"]["execution_permitted"] is False
     assert payload["ledger_recorded"] is True
     assert payload["plan"]["proposed_steps"]
@@ -88,3 +95,18 @@ def test_no_execution_endpoint_exists() -> None:
 
     assert client.post("/runs", json={}).status_code == 404
     assert client.post("/execute", json={}).status_code == 404
+
+
+def test_unsupported_provider_mode_is_rejected_before_planning() -> None:
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/plans",
+        json={
+            "user_goal": "Plan safely.",
+            "context_summary": {},
+            "policy": {"provider_mode": "vendor_managed_saas"},
+        },
+    )
+
+    assert response.status_code == 422

@@ -5,10 +5,19 @@ from quant_agent_runtime.model_gateway.provider import (
     ProviderPlanRequest,
     ProviderResult,
 )
-from quant_agent_runtime.models import ProviderMetadata, RiskTier
+from quant_agent_runtime.models import (
+    ProviderMetadata,
+    ProviderMode,
+    ProviderRuntimeStatus,
+    RiskTier,
+)
+from quant_agent_runtime.provider_config import internal_provider_status
 
 
 class FakePlanProvider(ModelProvider):
+    def __init__(self, provider_status: ProviderRuntimeStatus | None = None) -> None:
+        self._provider_status = provider_status or internal_provider_status()
+
     def generate_plan(self, request: ProviderPlanRequest) -> ProviderResult:
         steps: list[dict[str, object]] = []
         missing_inputs: list[str] = []
@@ -60,12 +69,7 @@ class FakePlanProvider(ModelProvider):
             "missing_inputs": missing_inputs,
             "steps": steps,
         }
-        metadata = ProviderMetadata(
-            provider="fake",
-            model="deterministic-plan-fixture",
-            provider_mode=request.policy.provider_mode,
-            supports_execution=False,
-        )
+        metadata = self._provider_metadata_for(request)
         return ProviderResult(raw_output=raw_output, metadata=metadata)
 
     def _summarize_goal(self, user_goal: str) -> str:
@@ -76,3 +80,28 @@ class FakePlanProvider(ModelProvider):
         if isinstance(value, str) and value.strip():
             return value[:240]
         return None
+
+    def _provider_metadata_for(self, request: ProviderPlanRequest) -> ProviderMetadata:
+        effective_mode = self._provider_status.effective_provider_mode
+        fallback_reason = self._provider_status.fallback_reason
+        if request.policy.provider_mode == ProviderMode.disabled_or_local_fallback:
+            effective_mode = ProviderMode.disabled_or_local_fallback
+            fallback_reason = (
+                fallback_reason
+                or "Provider disabled by request policy; using deterministic plan fixtures."
+            )
+
+        provider = self._provider_status.provider_identifier
+        if effective_mode == ProviderMode.disabled_or_local_fallback:
+            provider = "disabled"
+
+        return ProviderMetadata(
+            provider=provider,
+            model=self._provider_status.model_profile,
+            provider_mode=effective_mode,
+            config_source=self._provider_status.config_source,
+            configured_provider_mode=self._provider_status.configured_provider_mode,
+            fallback_reason=fallback_reason,
+            configuration_errors=self._provider_status.configuration_errors,
+            supports_execution=False,
+        )

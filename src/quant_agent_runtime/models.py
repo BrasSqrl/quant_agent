@@ -106,8 +106,33 @@ class ProviderMetadata(StrictModel):
     provider: str
     model: str
     provider_mode: ProviderMode
+    config_source: str = "internal_default"
+    configured_provider_mode: str | None = None
+    fallback_reason: str | None = None
+    configuration_errors: list[str] = Field(default_factory=list)
     request_purpose: str = "plan_generation"
     supports_execution: bool = False
+
+
+class ProviderRuntimeStatus(StrictModel):
+    config_source: str
+    configured_provider_mode: str
+    effective_provider_mode: ProviderMode
+    provider_identifier: str
+    model_profile: str
+    allowed_model_roles: list[str] = Field(default_factory=list)
+    configured: bool
+    supports_execution: Literal[False] = False
+    hosted_provider_enabled: Literal[False] = False
+    secret_reference_present: bool = False
+    secrets_exposed: Literal[False] = False
+    fallback_reason: str | None = None
+    health_check_enabled: bool = False
+    provider_reachable: bool = False
+    configuration_errors: list[str] = Field(default_factory=list)
+    timeout_seconds: int = 0
+    max_context_chars: int = 18000
+    retention_policy_label: str = "not_applicable"
 
 
 class PlanStep(StrictModel):
@@ -207,4 +232,5 @@ class RuntimeManifest(StrictModel):
     canonical_agent_contracts_loaded: bool
     loaded_agent_contracts: list[str]
     temporary_internal_contract_fixtures: bool
+    provider_status: ProviderRuntimeStatus
     safety_boundaries: list[str]

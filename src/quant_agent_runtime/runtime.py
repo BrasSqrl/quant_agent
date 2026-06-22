@@ -7,7 +7,7 @@ from quant_agent_runtime.contracts import QuantSuiteContractLoader
 from quant_agent_runtime.contracts.internal_test_fixtures import TEMPORARY_AGENT_CONTRACT_FIXTURES
 from quant_agent_runtime.ledger import InMemoryLedger
 from quant_agent_runtime.model_gateway import FakePlanProvider
-from quant_agent_runtime.models import ProviderMode, RiskTier, RuntimeManifest
+from quant_agent_runtime.models import ProviderMode, ProviderRuntimeStatus, RiskTier, RuntimeManifest
 from quant_agent_runtime.planner import PlannerService
 
 
@@ -15,9 +15,11 @@ from quant_agent_runtime.planner import PlannerService
 class RuntimeContainer:
     planner: PlannerService
     contract_loader: QuantSuiteContractLoader
+    provider_status: ProviderRuntimeStatus | None = None
 
     def manifest(self) -> RuntimeManifest:
         contract_result = self.contract_loader.load_agent_contracts()
+        provider_status = self.provider_status or self.contract_loader.load_agent_provider_status()
         loaded_contracts = (
             contract_result.loaded_agent_contracts
             if contract_result.canonical_agent_contracts_loaded
@@ -66,6 +68,7 @@ class RuntimeContainer:
             canonical_agent_contracts_loaded=contract_result.canonical_agent_contracts_loaded,
             loaded_agent_contracts=loaded_contracts,
             temporary_internal_contract_fixtures=not contract_result.canonical_agent_contracts_loaded,
+            provider_status=provider_status,
             safety_boundaries=[
                 "plan_only",
                 "no_app_execution",
@@ -87,12 +90,14 @@ def build_runtime() -> RuntimeContainer:
     ledger = InMemoryLedger()
     contract_loader = QuantSuiteContractLoader()
     canonical_capabilities = contract_loader.load_agent_capabilities()
+    provider_status = contract_loader.load_agent_provider_status()
     planner = PlannerService(
-        provider=FakePlanProvider(),
+        provider=FakePlanProvider(provider_status=provider_status),
         ledger=ledger,
         default_capabilities=canonical_capabilities or None,
     )
     return RuntimeContainer(
         planner=planner,
         contract_loader=contract_loader,
+        provider_status=provider_status,
     )

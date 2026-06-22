@@ -3,9 +3,14 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
+from json import JSONDecodeError
 from pathlib import Path
 
-from quant_agent_runtime.models import CapabilityDefinition, RiskTier
+from quant_agent_runtime.models import CapabilityDefinition, ProviderRuntimeStatus, RiskTier
+from quant_agent_runtime.provider_config import (
+    internal_provider_status,
+    provider_status_from_contract_payload,
+)
 
 
 @dataclass(frozen=True)
@@ -73,3 +78,30 @@ class QuantSuiteContractLoader:
                 )
             )
         return capabilities
+
+    def load_agent_provider_status(self) -> ProviderRuntimeStatus:
+        config_path = self._root / "contracts" / "agent_provider_config.v1.example.json"
+        if not config_path.is_file():
+            return internal_provider_status()
+
+        try:
+            with config_path.open("r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, JSONDecodeError):
+            return provider_status_from_contract_payload(
+                {},
+                config_source=self._source_label,
+                load_errors=["Canonical provider config could not be read."],
+            )
+
+        if not isinstance(payload, dict):
+            return provider_status_from_contract_payload(
+                {},
+                config_source=self._source_label,
+                load_errors=["Canonical provider config must be a JSON object."],
+            )
+
+        return provider_status_from_contract_payload(
+            payload,
+            config_source=self._source_label,
+        )

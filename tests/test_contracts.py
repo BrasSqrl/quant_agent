@@ -11,7 +11,7 @@ from quant_agent_runtime.capabilities import default_capabilities
 from quant_agent_runtime.contracts import QuantSuiteContractLoader
 from quant_agent_runtime.ledger import InMemoryLedger
 from quant_agent_runtime.model_gateway import FakePlanProvider, ModelProvider, ProviderPlanRequest, ProviderResult
-from quant_agent_runtime.models import PlanRequest, ProviderMetadata
+from quant_agent_runtime.models import PlanRequest, ProviderMetadata, ProviderMode
 from quant_agent_runtime.planner import PlannerService
 from quant_agent_runtime.runtime import RuntimeContainer
 from quant_agent_runtime.validation.errors import RuntimeValidationError
@@ -95,13 +95,15 @@ def validate_against_contract(payload: object, schema_name: str) -> None:
 
 def runtime_with_loader(loader: QuantSuiteContractLoader) -> RuntimeContainer:
     capabilities = loader.load_agent_capabilities()
+    provider_status = loader.load_agent_provider_status()
     return RuntimeContainer(
         planner=PlannerService(
-            provider=FakePlanProvider(),
+            provider=FakePlanProvider(provider_status=provider_status),
             ledger=InMemoryLedger(),
             default_capabilities=capabilities or None,
         ),
         contract_loader=loader,
+        provider_status=provider_status,
     )
 
 
@@ -125,12 +127,44 @@ def test_canonical_capability_example_is_loaded_and_mapped() -> None:
     assert capabilities[1].required_fields == ["target_summary"]
 
 
+def test_canonical_provider_config_example_is_loaded_and_mapped() -> None:
+    status = QuantSuiteContractLoader(QUANT_SUITE_ROOT).load_agent_provider_status()
+
+    assert status.config_source == "configured_path"
+    assert status.configured_provider_mode == "disabled_or_local_fallback"
+    assert status.effective_provider_mode == ProviderMode.disabled_or_local_fallback
+    assert status.provider_identifier == "disabled"
+    assert status.model_profile == "deterministic_plan_fixture"
+    assert status.allowed_model_roles == ["planner"]
+    assert status.configured is True
+    assert status.supports_execution is False
+    assert status.hosted_provider_enabled is False
+    assert status.secret_reference_present is False
+    assert status.secrets_exposed is False
+    assert status.fallback_reason
+    assert "cost_accounting_bucket" not in status.model_dump(mode="json")
+
+
 def test_internal_default_capabilities_remain_available_when_canonical_contracts_are_absent() -> None:
     missing_suite_root = AGENT_ROOT / "__missing_quant_suite_for_contract_test__"
     capabilities = QuantSuiteContractLoader(missing_suite_root).load_agent_capabilities()
 
     assert capabilities == []
     assert default_capabilities()[0].capability_id == "quant_suite.inspect_lifecycle_context"
+
+
+def test_internal_provider_status_is_used_when_canonical_config_is_absent() -> None:
+    missing_suite_root = AGENT_ROOT / "__missing_quant_suite_for_contract_test__"
+    status = QuantSuiteContractLoader(missing_suite_root).load_agent_provider_status()
+
+    assert status.config_source == "internal_default"
+    assert status.configured_provider_mode == "fake_provider"
+    assert status.effective_provider_mode == ProviderMode.fake_provider
+    assert status.provider_identifier == "fake"
+    assert status.model_profile == "deterministic-plan-fixture"
+    assert status.fallback_reason is None
+    assert status.secret_reference_present is False
+    assert status.secrets_exposed is False
 
 
 def test_internal_fixtures_are_used_only_when_canonical_contracts_are_absent() -> None:
@@ -155,6 +189,11 @@ def test_runtime_manifest_validates_against_canonical_contract() -> None:
     payload = response.json()
     assert payload["canonical_agent_contracts_loaded"] is True
     assert payload["temporary_internal_contract_fixtures"] is False
+    assert payload["provider_status"]["effective_provider_mode"] == "disabled_or_local_fallback"
+    assert payload["provider_status"]["supports_execution"] is False
+    assert payload["provider_status"]["hosted_provider_enabled"] is False
+    assert payload["provider_status"]["secrets_exposed"] is False
+    assert "cost_accounting_bucket" not in payload["provider_status"]
     validate_against_contract(payload, "agent_runtime_manifest.v1.schema.json")
 
 
@@ -189,6 +228,44 @@ def test_fake_provider_plan_validates_against_agent_plan_contract() -> None:
         response.json()["context_preview"],
         "assistant_context_preview.v1.schema.json",
     )
+
+
+def test_disabled_provider_fallback_metadata_and_ledger_validate() -> None:
+    runtime = runtime_with_loader(QuantSuiteContractLoader(QUANT_SUITE_ROOT))
+    client = TestClient(create_app(runtime))
+
+    response = client.post(
+        "/plans",
+        json={
+            "user_goal": "Build a conservative PD scorecard plan.",
+            "context_summary": {
+                "lifecycle_summary": "Lifecycle exists.",
+                "source_summary": "Development sample is registered.",
+                "target_summary": "Default flag is the candidate target.",
+                "package_summary": "No documentation package exists yet.",
+                "bundle_summary": "Monitoring bundle is not available.",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    metadata = payload["provider_metadata"]
+    assert metadata["provider"] == "disabled"
+    assert metadata["model"] == "deterministic_plan_fixture"
+    assert metadata["provider_mode"] == "disabled_or_local_fallback"
+    assert metadata["config_source"] == "configured_path"
+    assert metadata["configured_provider_mode"] == "disabled_or_local_fallback"
+    assert metadata["supports_execution"] is False
+    assert metadata["fallback_reason"]
+    assert metadata["configuration_errors"] == []
+    assert "cost_accounting_bucket" not in metadata
+    validate_against_contract(payload["plan"], "agent_plan.v1.schema.json")
+
+    entry = runtime.planner.ledger.list_entries()[0].model_dump(mode="json")
+    assert entry["provider_metadata"]["provider_mode"] == "disabled_or_local_fallback"
+    assert entry["provider_metadata"]["supports_execution"] is False
+    validate_against_contract(entry, "agent_execution_ledger.v1.schema.json")
 
 
 def test_plan_context_preview_omits_unsafe_request_context() -> None:

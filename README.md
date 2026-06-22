@@ -14,6 +14,7 @@ This first slice is plan-only. It provides:
 - `POST /plans`
 - deterministic fake-provider planning for local development and tests
 - contract-backed capability loading from `quant_suite` when available
+- contract-backed provider config diagnostics with disabled-provider fallback
 - code-enforced policy and plan validation
 - safe in-memory ledger entries
 - a contract loader boundary for canonical `quant_suite` agent contracts
@@ -50,6 +51,10 @@ The runtime loader looks for canonical contract drafts under:
 If `agent_*.v1.schema.json` files are not present, the runtime reports that it
 is using temporary internal test fixtures. Those fixtures are fallback test
 fixtures only and must not become the canonical contract source.
+
+When `agent_provider_config.v1.example.json` is present, the runtime reports a
+safe provider status in the manifest and plan metadata. Disabled provider mode
+uses deterministic plan fixtures and does not call a hosted model provider.
 
 ## Safety Boundary
 
