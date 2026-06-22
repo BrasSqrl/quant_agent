@@ -32,6 +32,23 @@ def test_runtime_manifest_returns_supported_modes() -> None:
     assert manifest["provider_status"]["hosted_provider_enabled"] is False
 
 
+def test_local_browser_cors_preflight_allows_plan_requests() -> None:
+    client = TestClient(create_app())
+
+    response = client.options(
+        "/plans",
+        headers={
+            "Origin": "http://127.0.0.1:5810",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:5810"
+    assert "POST" in response.headers["access-control-allow-methods"]
+
+
 def test_fake_provider_can_produce_valid_plan() -> None:
     client = TestClient(create_app())
 
