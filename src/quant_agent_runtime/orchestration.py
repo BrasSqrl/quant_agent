@@ -36,10 +36,11 @@ def orchestration_for_entry(entry: LedgerEntry) -> RunOrchestrationResult:
     raw_steps = snapshot.get("proposed_steps")
     steps_payload = raw_steps if isinstance(raw_steps, list) else []
     run_is_cancelled = entry.final_status == "cancelled" or bool(entry.cancellation_events)
+    run_is_paused = latest_recovery_event_type(entry) == "pause"
     plan_blocked = _plan_is_blocked(snapshot)
 
     summaries: list[OrchestrationStepSummary] = []
-    dependency_blocked = run_is_cancelled or plan_blocked
+    dependency_blocked = run_is_cancelled or run_is_paused or plan_blocked
     current_step_id: str | None = None
     blocking_label: str | None = None
 
@@ -52,6 +53,7 @@ def orchestration_for_entry(entry: LedgerEntry) -> RunOrchestrationResult:
             dependency_blocked=dependency_blocked,
             blocking_label=blocking_label,
             run_is_cancelled=run_is_cancelled,
+            run_is_paused=run_is_paused,
         )
         if current_step_id is None and _is_current_status(summary.status):
             current_step_id = summary.step_id
@@ -70,6 +72,10 @@ def orchestration_for_entry(entry: LedgerEntry) -> RunOrchestrationResult:
     allowed_next_actions = _run_allowed_actions(run_state, summaries)
     return RunOrchestrationResult(
         run_id=entry.run_id,
+        parent_run_id=entry.parent_run_id,
+        parent_plan_id=entry.parent_plan_id,
+        activated_revision_id=entry.activated_revision_id,
+        child_run_ids=entry.child_run_ids,
         run_state=run_state,
         final_status=entry.final_status,
         plan_id=snapshot.get("plan_id") if isinstance(snapshot.get("plan_id"), str) else None,
@@ -87,6 +93,12 @@ def run_state_from_orchestration(entry: LedgerEntry) -> RunState:
 
 def ensure_step_action_allowed(entry: LedgerEntry, step_id: str, action: str) -> None:
     orchestration = orchestration_for_entry(entry)
+    if orchestration.run_state == "paused":
+        raise _rejected(
+            "orchestration_run_paused",
+            "The recorded run is paused and must be resumed before gated actions can continue.",
+            step_id=step_id,
+        )
     if orchestration.run_state in _TERMINAL_RUN_STATES:
         raise _rejected(
             "orchestration_run_terminal",
@@ -128,6 +140,10 @@ def ledger_summary(entry: LedgerEntry) -> dict[str, Any]:
     return {
         "data_policy": entry.data_policy,
         "provider_mode": entry.provider_mode,
+        "parent_run_id": entry.parent_run_id,
+        "parent_plan_id": entry.parent_plan_id,
+        "activated_revision_id": entry.activated_revision_id,
+        "child_run_count": len(entry.child_run_ids),
         "preflight_count": len(entry.preflight_records),
         "confirmation_count": len(entry.confirmation_records),
         "action_request_count": len(entry.action_requests),
@@ -147,6 +163,7 @@ def _step_summary(
     dependency_blocked: bool,
     blocking_label: str | None,
     run_is_cancelled: bool,
+    run_is_paused: bool,
 ) -> OrchestrationStepSummary:
     step_id = str(step.get("step_id") or "")
     capability_id = str(step.get("capability_id") or "")
@@ -170,6 +187,10 @@ def _step_summary(
         status: OrchestrationStepStatus = "cancelled"
         required_gate = None
         blocker_reason = "The run has been cancelled."
+    elif run_is_paused:
+        status = "not_ready"
+        required_gate = "resume"
+        blocker_reason = "The run is paused and must be resumed before gated actions can continue."
     elif dependency_blocked:
         status = "not_ready"
         required_gate = "dependency"
@@ -267,6 +288,8 @@ def _run_state_from_summaries(
 ) -> RunState:
     if entry.final_status == "cancelled" or entry.cancellation_events:
         return "cancelled"
+    if latest_recovery_event_type(entry) == "pause":
+        return "paused"
     if plan_blocked:
         return "waiting_for_input"
     if current_step is None:
@@ -292,6 +315,8 @@ def _run_state_from_summaries(
 def _run_allowed_actions(run_state: RunState, summaries: list[OrchestrationStepSummary]) -> list[str]:
     if run_state in _TERMINAL_RUN_STATES:
         return []
+    if run_state == "paused":
+        return ["resume_run", "cancel_run"]
     current = next((step for step in summaries if step.is_current), None)
     actions = ["cancel_run"]
     if current is not None:
@@ -313,6 +338,16 @@ def _step_allowed_actions(status: str) -> list[str]:
 
 def _is_current_status(status: str) -> bool:
     return status not in _COMPLETE_STATUSES and status != "not_ready"
+
+
+def latest_recovery_event_type(entry: LedgerEntry) -> str | None:
+    for record in reversed(entry.recovery_events):
+        if not isinstance(record, dict):
+            continue
+        event_type = record.get("event_type")
+        if event_type in {"pause", "resume"}:
+            return event_type
+    return None
 
 
 def _plan_is_blocked(snapshot: dict[str, Any]) -> bool:

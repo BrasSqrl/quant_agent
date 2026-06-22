@@ -15,10 +15,18 @@ from quant_agent_runtime.models import (
     ExecutionRequest,
     ExecutionResult,
     LedgerEntry,
+    PauseRequest,
+    PauseResult,
+    PlanRevisionActivationRequest,
+    PlanRevisionActivationResult,
+    PlanRevisionRequest,
+    PlanRevisionResult,
     PreflightRequest,
     PreflightResult,
     PlanRequest,
     PlanResult,
+    ResumptionRequest,
+    ResumptionResult,
     RunListResult,
     RunOrchestrationResult,
     RunStatusResult,
@@ -154,6 +162,34 @@ def create_app(runtime: RuntimeContainer | None = None) -> FastAPI:
     def cancel_run(request: CancellationRequest) -> CancellationResult:
         try:
             return runtime_container.run_status.cancel_run(request)
+        except RuntimeValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
+
+    @api.post("/pauses", response_model=PauseResult)
+    def pause_run(request: PauseRequest) -> PauseResult:
+        try:
+            return runtime_container.run_status.pause_run(request)
+        except RuntimeValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
+
+    @api.post("/resumptions", response_model=ResumptionResult)
+    def resume_run(request: ResumptionRequest) -> ResumptionResult:
+        try:
+            return runtime_container.run_status.resume_run(request)
+        except RuntimeValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
+
+    @api.post("/plan-revisions", response_model=PlanRevisionResult)
+    def preview_plan_revision(request: PlanRevisionRequest) -> PlanRevisionResult:
+        try:
+            return runtime_container.plan_revision.preview_revision(request)
+        except RuntimeValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
+
+    @api.post("/plan-revision-activations", response_model=PlanRevisionActivationResult)
+    def activate_plan_revision(request: PlanRevisionActivationRequest) -> PlanRevisionActivationResult:
+        try:
+            return runtime_container.plan_revision_activation.activate_revision(request)
         except RuntimeValidationError as exc:
             raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
 

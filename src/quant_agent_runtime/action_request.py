@@ -63,6 +63,13 @@ class ActionRequestPreviewService:
                 step_id=request.step_id,
                 capability_id=capability_id or None,
             )
+        if plan_state == "paused":
+            raise _rejected(
+                "paused_run_action_request",
+                "The recorded run is paused and must be resumed before action request preview.",
+                step_id=request.step_id,
+                capability_id=capability_id or None,
+            )
 
         existing = _existing_action_request(entry, request.step_id, capability_id)
         if existing is not None:

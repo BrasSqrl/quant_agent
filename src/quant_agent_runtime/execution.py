@@ -57,10 +57,18 @@ class ExecutionService:
 
         capability_id = str(step.get("capability_id") or "")
         app_id = str(step.get("app_id") or "")
-        if run_state_for_entry(entry) == "cancelled":
+        run_state = run_state_for_entry(entry)
+        if run_state == "cancelled":
             raise _rejected(
                 "cancelled_run_execution",
                 "The recorded run is cancelled and cannot execute.",
+                step_id=request.step_id,
+                capability_id=capability_id or None,
+            )
+        if run_state == "paused":
+            raise _rejected(
+                "paused_run_execution",
+                "The recorded run is paused and must be resumed before execution.",
                 step_id=request.step_id,
                 capability_id=capability_id or None,
             )

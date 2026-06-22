@@ -55,6 +55,12 @@ class PreflightService:
                 "The recorded run is cancelled and cannot request preflight.",
                 step_id=request.step_id,
             )
+        if plan_state == "paused":
+            raise _rejected(
+                "paused_run_preflight",
+                "The recorded run is paused and must be resumed before requesting preflight.",
+                step_id=request.step_id,
+            )
 
         capability_id = str(step.get("capability_id") or "")
         app_id = str(step.get("app_id") or "")

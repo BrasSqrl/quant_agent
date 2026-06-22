@@ -99,6 +99,44 @@ class InMemoryLedger:
             ),
         )
 
+    def append_recovery_event(self, run_id: str, record: dict[str, Any]) -> LedgerEntry:
+        return self._update_entry(
+            run_id,
+            lambda entry: entry.model_copy(
+                update={
+                    "recovery_events": [
+                        *entry.recovery_events,
+                        record,
+                    ],
+                },
+                deep=True,
+            ),
+        )
+
+    def append_plan_revision_activation(
+        self,
+        run_id: str,
+        record: dict[str, Any],
+        *,
+        child_run_id: str,
+    ) -> LedgerEntry:
+        return self._update_entry(
+            run_id,
+            lambda entry: entry.model_copy(
+                update={
+                    "recovery_events": [
+                        *entry.recovery_events,
+                        record,
+                    ],
+                    "child_run_ids": [
+                        *entry.child_run_ids,
+                        *([] if child_run_id in entry.child_run_ids else [child_run_id]),
+                    ],
+                },
+                deep=True,
+            ),
+        )
+
     def list_entries(self) -> list[LedgerEntry]:
         return list(self._entries)
 

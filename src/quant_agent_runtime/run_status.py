@@ -9,24 +9,40 @@ from quant_agent_runtime.models import (
     CancellationRequest,
     CancellationResult,
     LedgerEntry,
+    PauseRequest,
+    PauseResult,
     PlanValidationResult,
+    ResumptionRequest,
+    ResumptionResult,
     RunListResult,
     RunSummary,
     RunStatusResult,
     ValidationIssue,
 )
-from quant_agent_runtime.orchestration import ledger_summary, orchestration_for_entry
+from quant_agent_runtime.capability_discovery import CapabilityDiscoveryService
+from quant_agent_runtime.orchestration import (
+    latest_recovery_event_type,
+    ledger_summary,
+    orchestration_for_entry,
+)
 from quant_agent_runtime.redaction import find_unsafe_payload_issues
 from quant_agent_runtime.run_state import run_state_for_entry
 from quant_agent_runtime.validation.errors import RuntimeValidationError
 
 
 _TERMINAL_RUN_STATES = {"completed", "completed_with_warnings", "failed_terminal"}
+_TERMINAL_OR_CANCELLED_RUN_STATES = {*_TERMINAL_RUN_STATES, "cancelled"}
 
 
 class RunStatusService:
-    def __init__(self, *, ledger: InMemoryLedger) -> None:
+    def __init__(
+        self,
+        *,
+        ledger: InMemoryLedger,
+        capability_discovery: CapabilityDiscoveryService | None = None,
+    ) -> None:
         self._ledger = ledger
+        self._capability_discovery = capability_discovery
 
     def get_run_status(self, run_id: str) -> RunStatusResult:
         entry = self._ledger.get(run_id)
@@ -134,11 +150,192 @@ class RunStatusService:
             ledger_recorded=True,
         )
 
+    def pause_run(self, request: PauseRequest) -> PauseResult:
+        entry = self._ledger.get(request.run_id)
+        if entry is None:
+            raise _rejected("unknown_run", "No recorded run was found for the requested run_id.")
+
+        existing_pause = _latest_unresumed_pause(entry)
+        if existing_pause is not None:
+            return PauseResult(
+                run_id=request.run_id,
+                run_state="paused",
+                pause_event=existing_pause,
+                final_status=entry.final_status,
+                allowed_next_actions=["resume_run", "cancel_run"],
+                validation=PlanValidationResult(status="valid"),
+                ledger_recorded=True,
+            )
+
+        state = run_state_for_entry(entry)
+        if state in _TERMINAL_OR_CANCELLED_RUN_STATES:
+            raise _rejected(
+                "terminal_run_pause",
+                "The recorded run is already terminal or cancelled and cannot be paused.",
+            )
+
+        pause_event = {
+            "recovery_event_id": f"recovery_{uuid4().hex[:12]}",
+            "event_type": "pause",
+            "status": "paused",
+            "reason": request.reason.strip(),
+            "pause_intent": request.pause_intent,
+            "paused_by": "local_user",
+            "paused_at_utc": _utc_now_label(),
+            "execution_permitted": False,
+        }
+        _reject_unsafe_recovery_event(pause_event)
+
+        try:
+            recorded_entry = self._ledger.append_recovery_event(request.run_id, pause_event)
+        except ValueError as exc:
+            raise _rejected(
+                "unsafe_recovery_record",
+                "The pause record could not be safely ledgered.",
+            ) from exc
+
+        return PauseResult(
+            run_id=request.run_id,
+            run_state=run_state_for_entry(recorded_entry),
+            pause_event=pause_event,
+            final_status=recorded_entry.final_status,
+            allowed_next_actions=orchestration_for_entry(recorded_entry).allowed_next_actions,
+            validation=PlanValidationResult(status="valid"),
+            ledger_recorded=True,
+        )
+
+    def resume_run(self, request: ResumptionRequest) -> ResumptionResult:
+        entry = self._ledger.get(request.run_id)
+        if entry is None:
+            raise _rejected("unknown_run", "No recorded run was found for the requested run_id.")
+
+        state = run_state_for_entry(entry)
+        if state in _TERMINAL_OR_CANCELLED_RUN_STATES:
+            raise _rejected(
+                "terminal_run_resumption",
+                "The recorded run is terminal or cancelled and cannot be resumed.",
+            )
+        if state != "paused" or _latest_unresumed_pause(entry) is None:
+            raise _rejected(
+                "run_not_paused",
+                "The recorded run is not paused and cannot be resumed.",
+            )
+
+        draft_resume = {
+            "recovery_event_id": f"recovery_{uuid4().hex[:12]}",
+            "event_type": "resume",
+            "status": "resumed",
+            "resume_intent": request.resume_intent,
+            "resumed_by": "local_user",
+            "resumed_at_utc": _utc_now_label(),
+            "revalidation_summary": {},
+            "execution_permitted": False,
+        }
+        candidate = entry.model_copy(
+            update={"recovery_events": [*entry.recovery_events, draft_resume]},
+            deep=True,
+        )
+        orchestration = orchestration_for_entry(candidate)
+        revalidation_summary = self._resume_revalidation_summary(candidate, orchestration)
+        resume_event = {
+            **draft_resume,
+            "revalidation_summary": revalidation_summary,
+        }
+        _reject_unsafe_recovery_event(resume_event)
+
+        try:
+            recorded_entry = self._ledger.append_recovery_event(request.run_id, resume_event)
+        except ValueError as exc:
+            raise _rejected(
+                "unsafe_recovery_record",
+                "The resume record could not be safely ledgered.",
+            ) from exc
+
+        recorded_orchestration = orchestration_for_entry(recorded_entry)
+        return ResumptionResult(
+            run_id=request.run_id,
+            run_state=recorded_orchestration.run_state,
+            resumption_event=resume_event,
+            final_status=recorded_entry.final_status,
+            orchestration=recorded_orchestration,
+            allowed_next_actions=recorded_orchestration.allowed_next_actions,
+            validation=PlanValidationResult(status="valid"),
+            ledger_recorded=True,
+        )
+
+    def _resume_revalidation_summary(
+        self,
+        entry: LedgerEntry,
+        orchestration: Any,
+    ) -> dict[str, Any]:
+        current = next((step for step in orchestration.steps if step.is_current), None)
+        if current is None:
+            raise _rejected(
+                "resume_without_current_step",
+                "No current orchestration step was available after resume revalidation.",
+            )
+
+        capability = _capability_snapshot(entry, current.capability_id, current.app_id)
+        if capability is None:
+            raise _rejected(
+                "stale_resume_capability_snapshot",
+                "The current step capability was not found in the ledger capability snapshot.",
+            )
+        if str(capability.get("risk_tier") or "") != current.risk_tier:
+            raise _rejected(
+                "stale_resume_capability_snapshot",
+                "The current step risk tier no longer matches the ledger capability snapshot.",
+            )
+        if capability.get("enabled", True) is not True:
+            raise _rejected(
+                "stale_resume_capability_snapshot",
+                "The current step capability is disabled in the ledger capability snapshot.",
+            )
+
+        capability_available = True
+        app_available = True
+        if self._capability_discovery is not None and (
+            current.preflight_required or current.execution_supported
+        ):
+            discovery = self._capability_discovery.discover()
+            app_available = not discovery.app_is_unavailable(current.app_id)
+            capability_available = (
+                discovery.supports_preflight(current.capability_id)
+                if current.preflight_required
+                else discovery.supports_execution(current.capability_id)
+            )
+            if not app_available:
+                raise _rejected(
+                    "resume_app_unavailable",
+                    "The current step owning app is not currently advertising agent capabilities.",
+                )
+            if not capability_available:
+                raise _rejected(
+                    "resume_capability_unavailable",
+                    "The current step capability is not currently reconciled as available.",
+                )
+
+        return {
+            "status": "valid",
+            "current_step_id": current.step_id,
+            "current_capability_id": current.capability_id,
+            "current_app_id": current.app_id,
+            "current_step_status": current.status,
+            "run_state_after_resume": orchestration.run_state,
+            "capability_snapshot_valid": True,
+            "capability_discovery_valid": capability_available,
+            "app_available": app_available,
+        }
+
 
 def _status_result(entry: LedgerEntry) -> RunStatusResult:
     state = run_state_for_entry(entry)
     return RunStatusResult(
         run_id=entry.run_id,
+        parent_run_id=entry.parent_run_id,
+        parent_plan_id=entry.parent_plan_id,
+        activated_revision_id=entry.activated_revision_id,
+        child_run_ids=entry.child_run_ids,
         run_state=state,
         final_status=entry.final_status,
         user_goal_summary=entry.user_goal_summary,
@@ -147,6 +344,7 @@ def _status_result(entry: LedgerEntry) -> RunStatusResult:
         latest_confirmation=_latest(entry.confirmation_records),
         latest_action_request=_latest(entry.action_requests),
         latest_action_result=_latest(entry.action_results),
+        latest_recovery=_latest(entry.recovery_events),
         latest_cancellation=_latest(entry.cancellation_events),
         ledger_summary=_ledger_summary(entry),
         allowed_next_actions=orchestration_for_entry(entry).allowed_next_actions,
@@ -157,6 +355,10 @@ def _status_result(entry: LedgerEntry) -> RunStatusResult:
 def _run_summary(entry: LedgerEntry) -> RunSummary:
     return RunSummary(
         run_id=entry.run_id,
+        parent_run_id=entry.parent_run_id,
+        parent_plan_id=entry.parent_plan_id,
+        activated_revision_id=entry.activated_revision_id,
+        child_run_ids=entry.child_run_ids,
         run_state=run_state_for_entry(entry),
         final_status=entry.final_status,
         user_goal_summary=entry.user_goal_summary,
@@ -235,16 +437,47 @@ def _latest_event_at_utc(entry: LedgerEntry) -> str | None:
     for records in [
         entry.confirmation_records,
         entry.action_requests,
+        entry.recovery_events,
         entry.cancellation_events,
     ]:
         for record in records:
             if not isinstance(record, dict):
                 continue
-            for key in ["confirmed_at_utc", "requested_at_utc", "cancelled_at_utc"]:
+            for key in [
+                "confirmed_at_utc",
+                "requested_at_utc",
+                "paused_at_utc",
+                "resumed_at_utc",
+                "activated_at_utc",
+                "cancelled_at_utc",
+            ]:
                 value = record.get(key)
                 if isinstance(value, str) and value:
                     candidates.append(value)
     return sorted(candidates)[-1] if candidates else None
+
+
+def _latest_unresumed_pause(entry: LedgerEntry) -> dict[str, Any] | None:
+    for record in reversed(entry.recovery_events):
+        if not isinstance(record, dict):
+            continue
+        event_type = record.get("event_type")
+        if event_type == "resume":
+            return None
+        if event_type == "pause":
+            return record
+    return None
+
+
+def _capability_snapshot(entry: LedgerEntry, capability_id: str, app_id: str) -> dict[str, Any] | None:
+    for capability in entry.capability_snapshot:
+        if (
+            isinstance(capability, dict)
+            and capability.get("capability_id") == capability_id
+            and capability.get("app_id") == app_id
+        ):
+            return capability
+    return None
 
 
 def _latest(records: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -252,6 +485,20 @@ def _latest(records: list[dict[str, Any]]) -> dict[str, Any] | None:
         if isinstance(record, dict):
             return record
     return None
+
+
+def _reject_unsafe_recovery_event(record: dict[str, Any]) -> None:
+    unsafe_issues = find_unsafe_payload_issues(record, root="recovery")
+    if unsafe_issues:
+        raise RuntimeValidationError(
+            PlanValidationResult(
+                status="rejected",
+                errors=[
+                    issue.model_copy(update={"code": "unsafe_recovery_record"})
+                    for issue in unsafe_issues
+                ],
+            )
+        )
 
 
 def _utc_now_label() -> str:

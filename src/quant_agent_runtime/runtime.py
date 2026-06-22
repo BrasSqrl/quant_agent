@@ -15,6 +15,8 @@ from quant_agent_runtime.models import ProviderMode, ProviderRuntimeStatus, Risk
 from quant_agent_runtime.orchestration import OrchestrationService
 from quant_agent_runtime.app_clients import LocalAgentAppClient
 from quant_agent_runtime.capability_discovery import CapabilityDiscoveryService
+from quant_agent_runtime.plan_revision import PlanRevisionService
+from quant_agent_runtime.plan_revision_activation import PlanRevisionActivationService
 from quant_agent_runtime.planner import PlannerService
 from quant_agent_runtime.preflight import PreflightService
 from quant_agent_runtime.run_status import RunStatusService
@@ -29,6 +31,8 @@ class RuntimeContainer:
     execution: ExecutionService
     run_status: RunStatusService
     orchestration: OrchestrationService
+    plan_revision: PlanRevisionService
+    plan_revision_activation: PlanRevisionActivationService
     contract_loader: QuantSuiteContractLoader
     capability_discovery: CapabilityDiscoveryService
     provider_status: ProviderRuntimeStatus | None = None
@@ -64,6 +68,10 @@ class RuntimeContainer:
                 "GET /runs/{run_id}/orchestration",
                 "GET /runs/{run_id}/ledger",
                 "POST /cancellations",
+                "POST /pauses",
+                "POST /resumptions",
+                "POST /plan-revisions",
+                "POST /plan-revision-activations",
             ],
             supported_provider_modes=[
                 ProviderMode.fake_provider,
@@ -91,7 +99,10 @@ class RuntimeContainer:
             supported_execution_capabilities=discovery_result.supported_execution_capabilities,
             ledger_support_level="local_json_file_backed",
             ledger_storage=self.planner.ledger.diagnostics(),
+            recovery_support_level="manual_pause_resume_only",
             orchestration_support_level="manual_guided_existing_steps_only",
+            plan_revision_support_level="manual_preview_only",
+            plan_revision_activation_support_level="manual_child_run_only",
             plan_only_support_level="supported",
             execution_support_level="single_step_review_draft_actions_only",
             redaction_support_level="deterministic_context_redaction",
@@ -157,8 +168,18 @@ def build_runtime() -> RuntimeContainer:
         app_client=app_client,
         capability_discovery=capability_discovery,
     )
-    run_status = RunStatusService(ledger=ledger)
+    run_status = RunStatusService(ledger=ledger, capability_discovery=capability_discovery)
     orchestration = OrchestrationService(ledger=ledger)
+    plan_revision = PlanRevisionService(
+        provider=FakePlanProvider(provider_status=provider_status),
+        ledger=ledger,
+        contract_loader=contract_loader,
+        default_capabilities=canonical_capabilities or None,
+    )
+    plan_revision_activation = PlanRevisionActivationService(
+        ledger=ledger,
+        contract_loader=contract_loader,
+    )
     return RuntimeContainer(
         planner=planner,
         preflight=preflight,
@@ -167,6 +188,8 @@ def build_runtime() -> RuntimeContainer:
         execution=execution,
         run_status=run_status,
         orchestration=orchestration,
+        plan_revision=plan_revision,
+        plan_revision_activation=plan_revision_activation,
         contract_loader=contract_loader,
         capability_discovery=capability_discovery,
         provider_status=provider_status,

@@ -195,6 +195,7 @@ RunState = Literal[
     "preflight_blocked",
     "ready_for_execution_preview",
     "running",
+    "paused",
     "completed",
     "completed_with_warnings",
     "failed_recoverable",
@@ -295,6 +296,10 @@ class ExecutionResult(StrictModel):
 
 class RunStatusResult(StrictModel):
     run_id: str
+    parent_run_id: str | None = None
+    parent_plan_id: str | None = None
+    activated_revision_id: str | None = None
+    child_run_ids: list[str] = Field(default_factory=list)
     run_state: RunState
     final_status: str
     user_goal_summary: str
@@ -303,6 +308,7 @@ class RunStatusResult(StrictModel):
     latest_confirmation: dict[str, Any] | None = None
     latest_action_request: dict[str, Any] | None = None
     latest_action_result: dict[str, Any] | None = None
+    latest_recovery: dict[str, Any] | None = None
     latest_cancellation: dict[str, Any] | None = None
     ledger_summary: dict[str, Any]
     allowed_next_actions: list[str] = Field(default_factory=list)
@@ -311,6 +317,10 @@ class RunStatusResult(StrictModel):
 
 class RunSummary(StrictModel):
     run_id: str
+    parent_run_id: str | None = None
+    parent_plan_id: str | None = None
+    activated_revision_id: str | None = None
+    child_run_ids: list[str] = Field(default_factory=list)
     run_state: RunState
     final_status: str
     user_goal_summary: str
@@ -350,6 +360,10 @@ class OrchestrationStepSummary(StrictModel):
 
 class RunOrchestrationResult(StrictModel):
     run_id: str
+    parent_run_id: str | None = None
+    parent_plan_id: str | None = None
+    activated_revision_id: str | None = None
+    child_run_ids: list[str] = Field(default_factory=list)
     run_state: RunState
     final_status: str
     plan_id: str | None = None
@@ -376,10 +390,95 @@ class CancellationResult(StrictModel):
     ledger_recorded: bool
 
 
+class PauseRequest(StrictModel):
+    run_id: str = Field(min_length=1)
+    pause_intent: Literal["pause_run"]
+    reason: str = Field(min_length=1)
+
+
+class PauseResult(StrictModel):
+    run_id: str
+    run_state: RunState
+    pause_event: dict[str, Any]
+    final_status: str
+    allowed_next_actions: list[str] = Field(default_factory=list)
+    validation: PlanValidationResult
+    ledger_recorded: bool
+
+
+class ResumptionRequest(StrictModel):
+    run_id: str = Field(min_length=1)
+    resume_intent: Literal["resume_run"]
+
+
+class ResumptionResult(StrictModel):
+    run_id: str
+    run_state: RunState
+    resumption_event: dict[str, Any]
+    final_status: str
+    orchestration: RunOrchestrationResult
+    allowed_next_actions: list[str] = Field(default_factory=list)
+    validation: PlanValidationResult
+    ledger_recorded: bool
+
+
+PlanRevisionReason = Literal[
+    "missing_inputs",
+    "preflight_blocked",
+    "stale_state",
+    "failed_recoverable",
+    "user_requested",
+]
+
+
+class PlanRevisionRequest(StrictModel):
+    run_id: str = Field(min_length=1)
+    revision_intent: Literal["revise_plan"]
+    reason: PlanRevisionReason
+    current_context_summary: dict[str, Any] = Field(default_factory=dict)
+
+
+class PlanRevisionResult(StrictModel):
+    run_id: str
+    parent_plan_id: str
+    revision_id: str
+    revised_plan: dict[str, Any]
+    revision_event: dict[str, Any]
+    run_state: RunState
+    orchestration: RunOrchestrationResult
+    context_preview: ContextPreview
+    stale_state_summary: dict[str, Any]
+    validation: PlanValidationResult
+    ledger_recorded: bool
+
+
+class PlanRevisionActivationRequest(StrictModel):
+    run_id: str = Field(min_length=1)
+    revision_id: str = Field(min_length=1)
+    activation_intent: Literal["activate_plan_revision"]
+
+
+class PlanRevisionActivationResult(StrictModel):
+    parent_run_id: str
+    child_run_id: str
+    revision_id: str
+    activated_plan: dict[str, Any]
+    activation_event: dict[str, Any]
+    child_run_state: RunState
+    child_orchestration: RunOrchestrationResult
+    parent_run_state: RunState
+    validation: PlanValidationResult
+    ledger_recorded: bool
+
+
 class LedgerEntry(StrictModel):
     schema_version: str = "1.0"
     data_policy: Literal["summaries_and_references_only"] = "summaries_and_references_only"
     run_id: str
+    parent_run_id: str | None = None
+    parent_plan_id: str | None = None
+    activated_revision_id: str | None = None
+    child_run_ids: list[str] = Field(default_factory=list)
     user_goal_summary: str
     provider_mode: ProviderMode
     provider_metadata: ProviderMetadata | None = None
@@ -418,7 +517,10 @@ class RuntimeManifest(StrictModel):
     supported_execution_capabilities: list[str] = Field(default_factory=list)
     ledger_support_level: str
     ledger_storage: dict[str, Any] = Field(default_factory=dict)
+    recovery_support_level: str = "not_available"
     orchestration_support_level: str = "not_available"
+    plan_revision_support_level: str = "not_available"
+    plan_revision_activation_support_level: str = "not_available"
     plan_only_support_level: str
     execution_support_level: str
     redaction_support_level: str

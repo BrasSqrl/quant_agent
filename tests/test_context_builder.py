@@ -19,6 +19,8 @@ from quant_agent_runtime.execution import ExecutionService
 from quant_agent_runtime.ledger import InMemoryLedger
 from quant_agent_runtime.model_gateway import FakePlanProvider
 from quant_agent_runtime.orchestration import OrchestrationService
+from quant_agent_runtime.plan_revision import PlanRevisionService
+from quant_agent_runtime.plan_revision_activation import PlanRevisionActivationService
 from quant_agent_runtime.planner import PlannerService
 from quant_agent_runtime.preflight import PreflightService
 from quant_agent_runtime.runtime import RuntimeContainer
@@ -89,6 +91,16 @@ def runtime_with_canonical_capabilities() -> RuntimeContainer:
         ),
         run_status=RunStatusService(ledger=ledger),
         orchestration=OrchestrationService(ledger=ledger),
+        plan_revision=PlanRevisionService(
+            provider=FakePlanProvider(),
+            ledger=ledger,
+            contract_loader=loader,
+            default_capabilities=capabilities or None,
+        ),
+        plan_revision_activation=PlanRevisionActivationService(
+            ledger=ledger,
+            contract_loader=loader,
+        ),
         contract_loader=loader,
         capability_discovery=discovery,
     )

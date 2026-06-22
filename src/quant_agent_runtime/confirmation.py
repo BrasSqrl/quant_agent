@@ -67,6 +67,13 @@ class ConfirmationService:
                 step_id=request.step_id,
                 capability_id=str(step.get("capability_id") or "") or None,
             )
+        if plan_state == "paused":
+            raise _rejected(
+                "paused_run_confirmation",
+                "The recorded run is paused and must be resumed before confirmation.",
+                step_id=request.step_id,
+                capability_id=str(step.get("capability_id") or "") or None,
+            )
 
         capability_id = str(step.get("capability_id") or "")
         app_id = str(step.get("app_id") or "")

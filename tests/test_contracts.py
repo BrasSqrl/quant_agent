@@ -24,6 +24,8 @@ from quant_agent_runtime.models import (
     RedactionSummary,
 )
 from quant_agent_runtime.orchestration import OrchestrationService
+from quant_agent_runtime.plan_revision import PlanRevisionService
+from quant_agent_runtime.plan_revision_activation import PlanRevisionActivationService
 from quant_agent_runtime.preflight import PreflightService
 from quant_agent_runtime.planner import PlannerService
 from quant_agent_runtime.runtime import RuntimeContainer
@@ -230,6 +232,16 @@ def runtime_with_loader(loader: QuantSuiteContractLoader) -> RuntimeContainer:
         ),
         run_status=RunStatusService(ledger=ledger),
         orchestration=OrchestrationService(ledger=ledger),
+        plan_revision=PlanRevisionService(
+            provider=FakePlanProvider(provider_status=provider_status),
+            ledger=ledger,
+            contract_loader=loader,
+            default_capabilities=capabilities or None,
+        ),
+        plan_revision_activation=PlanRevisionActivationService(
+            ledger=ledger,
+            contract_loader=loader,
+        ),
         contract_loader=loader,
         capability_discovery=discovery,
         provider_status=provider_status,
