@@ -8,6 +8,7 @@ from quant_agent_runtime.capabilities import default_capabilities
 from quant_agent_runtime.confirmation import ConfirmationService
 from quant_agent_runtime.contracts import QuantSuiteContractLoader
 from quant_agent_runtime.contracts.internal_test_fixtures import TEMPORARY_AGENT_CONTRACT_FIXTURES
+from quant_agent_runtime.demo_narrative import DemoNarrativeService
 from quant_agent_runtime.execution import ExecutionService
 from quant_agent_runtime.ledger import FileBackedLedger
 from quant_agent_runtime.model_gateway import FakePlanProvider, ModelProvider, SharedLlmPlanProvider
@@ -25,6 +26,7 @@ from quant_agent_runtime.retry import RetryService
 from quant_agent_runtime.run_status import RunStatusService
 from quant_agent_runtime.sample_autopilot import SampleAutopilotPreviewService, SampleAutopilotStepService
 from quant_agent_runtime.sample_reset import SampleResetService
+from quant_agent_runtime.user_workflow import UserWorkflowService
 
 
 @dataclass
@@ -43,6 +45,8 @@ class RuntimeContainer:
     sample_autopilot: SampleAutopilotPreviewService
     sample_autopilot_step: SampleAutopilotStepService
     sample_reset: SampleResetService
+    demo_narrative: DemoNarrativeService
+    user_workflow: UserWorkflowService
     contract_loader: QuantSuiteContractLoader
     capability_discovery: CapabilityDiscoveryService
     provider_status: ProviderRuntimeStatus | None = None
@@ -88,6 +92,9 @@ class RuntimeContainer:
                 "POST /autopilot-steps",
                 "POST /sample-reset-previews",
                 "POST /sample-resets",
+                "GET /runs/{run_id}/demo-narrative",
+                "POST /user-workflow-readiness",
+                "POST /user-workflow-consents",
             ],
             supported_provider_modes=[
                 ProviderMode.fake_provider,
@@ -125,6 +132,8 @@ class RuntimeContainer:
             revalidation_support_level="manual_context_check_only",
             autopilot_support_level="sample_owned_one_step_manual_advance",
             sample_reset_support_level="sample_owned_studio_orchestrated_only",
+            demo_narrative_support_level="sample_owned_ledger_narrative_only",
+            user_workflow_support_level="manual_user_owned_consent_gate_only",
             plan_only_support_level="supported",
             execution_support_level="single_step_review_draft_actions_only",
             redaction_support_level="deterministic_context_redaction",
@@ -222,6 +231,8 @@ def build_runtime() -> RuntimeContainer:
         ledger=ledger,
         app_client=app_client,
     )
+    demo_narrative = DemoNarrativeService(ledger=ledger)
+    user_workflow = UserWorkflowService(ledger=ledger)
     return RuntimeContainer(
         planner=planner,
         preflight=preflight,
@@ -237,6 +248,8 @@ def build_runtime() -> RuntimeContainer:
         sample_autopilot=sample_autopilot,
         sample_autopilot_step=sample_autopilot_step,
         sample_reset=sample_reset,
+        demo_narrative=demo_narrative,
+        user_workflow=user_workflow,
         contract_loader=contract_loader,
         capability_discovery=capability_discovery,
         provider_status=provider_status,

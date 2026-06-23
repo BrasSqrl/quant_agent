@@ -15,6 +15,7 @@ from quant_agent_runtime.models import (
 from quant_agent_runtime.orchestration import ensure_step_action_allowed
 from quant_agent_runtime.redaction import find_unsafe_payload_issues
 from quant_agent_runtime.run_state import run_state_for_entry
+from quant_agent_runtime.user_workflow import ensure_user_workflow_consent
 from quant_agent_runtime.validation.errors import RuntimeValidationError
 
 
@@ -78,6 +79,11 @@ class ActionRequestPreviewService:
                 capability_id=capability_id or None,
             )
 
+        ensure_user_workflow_consent(
+            entry,
+            step_id=request.step_id,
+            capability_id=capability_id or None,
+        )
         existing = _existing_action_request(entry, request.step_id, capability_id)
         if existing is not None:
             self._validate_action_request(existing, request.step_id, capability_id)

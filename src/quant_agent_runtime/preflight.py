@@ -16,6 +16,7 @@ from quant_agent_runtime.models import (
 from quant_agent_runtime.orchestration import ensure_step_action_allowed
 from quant_agent_runtime.redaction import find_unsafe_payload_issues
 from quant_agent_runtime.run_state import run_state_for_entry
+from quant_agent_runtime.user_workflow import ensure_user_workflow_readiness
 from quant_agent_runtime.validation.errors import RuntimeValidationError
 
 PREFLIGHT_CONTRACT_SCHEMA = "agent_action_preflight.v1.schema.json"
@@ -85,6 +86,11 @@ class PreflightService:
                 step_id=request.step_id,
                 capability_id=capability_id or None,
             )
+        ensure_user_workflow_readiness(
+            entry,
+            step_id=request.step_id,
+            capability_id=capability_id or None,
+        )
         ensure_step_action_allowed(entry, request.step_id, "run_preflight")
         if app_id not in {"quant_data", "quant_monitoring"}:
             raise _rejected(

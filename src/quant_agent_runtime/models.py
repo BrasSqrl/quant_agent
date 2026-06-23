@@ -552,6 +552,77 @@ class RunRevalidationResult(StrictModel):
     ledger_recorded: bool
 
 
+OwnershipClassification = Literal["sample_owned", "user_owned", "unknown"]
+
+
+class UserWorkflowOwnershipSummary(StrictModel):
+    ownership: OwnershipClassification
+    lifecycle_id: str | None = None
+    sample_workspace_id: str | None = None
+    sample_owned: bool = False
+    sample_workspace: bool = False
+    blockers: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    safe_labels: dict[str, Any] = Field(default_factory=dict)
+
+
+class UserWorkflowReadinessSummary(StrictModel):
+    status: Literal["ready", "blocked", "sample_owned", "not_checked"] = "not_checked"
+    readiness_intent: str | None = None
+    consent_required: bool = False
+    allowed_preflight_capabilities: list[str] = Field(default_factory=list)
+    allowed_execution_capabilities: list[str] = Field(default_factory=list)
+    blockers: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    data_policy: Literal["summaries_and_references_only"] = "summaries_and_references_only"
+    checked_at_utc: str | None = None
+
+
+class UserWorkflowConsentSummary(StrictModel):
+    status: Literal["not_required", "not_recorded", "consented"] = "not_recorded"
+    consent_intent: str | None = None
+    consent_scope: str | None = None
+    consented_by: str | None = None
+    consented_at_utc: str | None = None
+    execution_permitted: Literal[False] = False
+    blockers: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class UserWorkflowReadinessRequest(StrictModel):
+    run_id: str = Field(min_length=1)
+    readiness_intent: Literal["check_user_owned_readiness"]
+    current_context_summary: dict[str, Any] = Field(default_factory=dict)
+
+
+class UserWorkflowReadinessResult(StrictModel):
+    run_id: str
+    ownership_summary: UserWorkflowOwnershipSummary
+    readiness_summary: UserWorkflowReadinessSummary
+    consent_summary: UserWorkflowConsentSummary
+    run_state: RunState
+    orchestration: RunOrchestrationResult
+    validation: PlanValidationResult
+    ledger_recorded: bool
+
+
+class UserWorkflowConsentRequest(StrictModel):
+    run_id: str = Field(min_length=1)
+    consent_intent: Literal["approve_user_owned_guided_execution"]
+    consent_scope: Literal["single_run_review_draft_actions"]
+
+
+class UserWorkflowConsentResult(StrictModel):
+    run_id: str
+    ownership_summary: UserWorkflowOwnershipSummary
+    readiness_summary: UserWorkflowReadinessSummary
+    consent_summary: UserWorkflowConsentSummary
+    run_state: RunState
+    orchestration: RunOrchestrationResult
+    validation: PlanValidationResult
+    ledger_recorded: bool
+
+
 class SampleAutopilotPreviewRequest(StrictModel):
     run_id: str = Field(min_length=1)
     autopilot_intent: Literal["preview_sample_autopilot"]
@@ -668,6 +739,31 @@ class SampleResetResult(StrictModel):
     ledger_recorded: bool
 
 
+class DemoNarrativeSection(StrictModel):
+    section_id: str
+    title: str
+    status: str
+    summary: str
+    step_id: str | None = None
+    capability_id: str | None = None
+    app_id: str | None = None
+    evidence_references: list[dict[str, Any]] = Field(default_factory=list)
+    blockers: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class DemoNarrativeResult(StrictModel):
+    run_id: str
+    demo_status: Literal["not_sample_demo", "in_progress", "completed", "sample_reset", "blocked"]
+    sample_eligibility: SampleAutopilotEligibility
+    narrative_sections: list[DemoNarrativeSection] = Field(default_factory=list)
+    safety_summary: dict[str, Any]
+    run_progress_summary: RunProgressSummary
+    orchestration: RunOrchestrationResult
+    ledger_summary: dict[str, Any]
+    validation: PlanValidationResult
+
+
 class LedgerEntry(StrictModel):
     schema_version: str = "1.0"
     data_policy: Literal["summaries_and_references_only"] = "summaries_and_references_only"
@@ -720,8 +816,10 @@ class RuntimeManifest(StrictModel):
     plan_revision_support_level: str = "not_available"
     plan_revision_activation_support_level: str = "not_available"
     revalidation_support_level: str = "not_available"
+    user_workflow_support_level: str = "not_available"
     autopilot_support_level: str = "not_available"
     sample_reset_support_level: str = "not_available"
+    demo_narrative_support_level: str = "not_available"
     plan_only_support_level: str
     execution_support_level: str
     redaction_support_level: str

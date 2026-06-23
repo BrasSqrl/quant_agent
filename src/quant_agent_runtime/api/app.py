@@ -12,6 +12,7 @@ from quant_agent_runtime.models import (
     CancellationResult,
     ConfirmationRequest,
     ConfirmationResult,
+    DemoNarrativeResult,
     ExecutionRequest,
     ExecutionResult,
     LedgerEntry,
@@ -43,6 +44,10 @@ from quant_agent_runtime.models import (
     SampleResetPreviewResult,
     SampleResetRequest,
     SampleResetResult,
+    UserWorkflowConsentRequest,
+    UserWorkflowConsentResult,
+    UserWorkflowReadinessRequest,
+    UserWorkflowReadinessResult,
 )
 from quant_agent_runtime.runtime import RuntimeContainer, build_runtime
 from quant_agent_runtime.validation.errors import RuntimeValidationError
@@ -177,6 +182,13 @@ def create_app(runtime: RuntimeContainer | None = None) -> FastAPI:
         except RuntimeValidationError as exc:
             raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
 
+    @api.get("/runs/{run_id}/demo-narrative", response_model=DemoNarrativeResult)
+    def get_run_demo_narrative(run_id: str) -> DemoNarrativeResult:
+        try:
+            return runtime_container.demo_narrative.get_demo_narrative(run_id)
+        except RuntimeValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
+
     @api.post("/cancellations", response_model=CancellationResult)
     def cancel_run(request: CancellationRequest) -> CancellationResult:
         try:
@@ -244,6 +256,24 @@ def create_app(runtime: RuntimeContainer | None = None) -> FastAPI:
     def reset_sample_demo(request: SampleResetRequest) -> SampleResetResult:
         try:
             return runtime_container.sample_reset.reset_sample(request)
+        except RuntimeValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
+
+    @api.post("/user-workflow-readiness", response_model=UserWorkflowReadinessResult)
+    def check_user_workflow_readiness(
+        request: UserWorkflowReadinessRequest,
+    ) -> UserWorkflowReadinessResult:
+        try:
+            return runtime_container.user_workflow.check_readiness(request)
+        except RuntimeValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
+
+    @api.post("/user-workflow-consents", response_model=UserWorkflowConsentResult)
+    def approve_user_workflow_consent(
+        request: UserWorkflowConsentRequest,
+    ) -> UserWorkflowConsentResult:
+        try:
+            return runtime_container.user_workflow.approve_consent(request)
         except RuntimeValidationError as exc:
             raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
 

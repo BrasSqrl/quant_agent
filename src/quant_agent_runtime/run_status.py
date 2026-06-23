@@ -451,6 +451,8 @@ def _latest_event_at_utc(entry: LedgerEntry) -> str | None:
                 "paused_at_utc",
                 "resumed_at_utc",
                 "activated_at_utc",
+                "checked_at_utc",
+                "consented_at_utc",
                 "cancelled_at_utc",
             ]:
                 value = record.get(key)

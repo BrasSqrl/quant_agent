@@ -15,6 +15,7 @@ from quant_agent_runtime.capability_discovery import CapabilityDiscoveryService
 from quant_agent_runtime.confirmation import ConfirmationService
 from quant_agent_runtime.context_builder import LifecycleContextBuilder
 from quant_agent_runtime.contracts import QuantSuiteContractLoader
+from quant_agent_runtime.demo_narrative import DemoNarrativeService
 from quant_agent_runtime.execution import ExecutionService
 from quant_agent_runtime.ledger import InMemoryLedger
 from quant_agent_runtime.model_gateway import FakePlanProvider
@@ -29,6 +30,7 @@ from quant_agent_runtime.runtime import RuntimeContainer
 from quant_agent_runtime.run_status import RunStatusService
 from quant_agent_runtime.sample_autopilot import SampleAutopilotPreviewService, SampleAutopilotStepService
 from quant_agent_runtime.sample_reset import SampleResetService
+from quant_agent_runtime.user_workflow import UserWorkflowService
 
 
 AGENT_ROOT = Path(__file__).resolve().parents[1]
@@ -125,6 +127,11 @@ def runtime_with_canonical_capabilities() -> RuntimeContainer:
             app_client=app_client,
             sample_workspace_root=QUANT_SUITE_ROOT / "fixtures" / "sample_workspaces",
         ),
+        demo_narrative=DemoNarrativeService(
+            ledger=ledger,
+            sample_workspace_root=QUANT_SUITE_ROOT / "fixtures" / "sample_workspaces",
+        ),
+        user_workflow=UserWorkflowService(ledger=ledger),
         contract_loader=loader,
         capability_discovery=discovery,
     )

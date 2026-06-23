@@ -22,6 +22,7 @@ from quant_agent_runtime.models import (
 from quant_agent_runtime.orchestration import ensure_step_action_allowed
 from quant_agent_runtime.redaction import find_unsafe_payload_issues
 from quant_agent_runtime.run_state import run_state_for_entry
+from quant_agent_runtime.user_workflow import ensure_user_workflow_consent
 from quant_agent_runtime.validation.errors import RuntimeValidationError
 
 ACTION_REQUEST_CONTRACT_SCHEMA = "agent_action_request.v1.schema.json"
@@ -80,6 +81,11 @@ class ExecutionService:
                 capability_id=capability_id or None,
             )
 
+        ensure_user_workflow_consent(
+            entry,
+            step_id=request.step_id,
+            capability_id=capability_id or None,
+        )
         existing = _existing_successful_result(entry, request.step_id, capability_id, app_id)
         existing_failure = _existing_failure_result(entry, request.step_id, capability_id, app_id)
         existing_result = existing or existing_failure
@@ -227,6 +233,11 @@ class ExecutionService:
                 step_id=step_id,
                 capability_id=capability_id or None,
             )
+        ensure_user_workflow_consent(
+            entry,
+            step_id=step_id,
+            capability_id=capability_id or None,
+        )
 
         capability = _capability_snapshot(entry, capability_id, app_id)
         if capability is None:
