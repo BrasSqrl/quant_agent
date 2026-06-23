@@ -79,10 +79,11 @@ class WorkflowRunService:
             )
 
         capabilities = self._contract_loader.load_agent_capabilities() or default_capabilities()
+        by_capability_id = {capability.capability_id: capability for capability in capabilities}
         selected = [
-            capability
-            for capability in capabilities
-            if capability.capability_id in set(scope.selected_capability_ids)
+            by_capability_id[capability_id]
+            for capability_id in scope.selected_capability_ids
+            if capability_id in by_capability_id
         ]
         plan_result = self._planner.create_plan(
             PlanRequest(

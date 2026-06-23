@@ -4,7 +4,6 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from quant_agent_runtime.capability_discovery import SUPPORTED_EXECUTION_CAPABILITIES
 from quant_agent_runtime.governance import current_governance_actor
 from quant_agent_runtime.ledger import InMemoryLedger
 from quant_agent_runtime.models import (
@@ -885,9 +884,14 @@ def _execution_capabilities(entry: LedgerEntry) -> list[str]:
         if not isinstance(step, dict):
             continue
         capability_id = _safe_string(step.get("capability_id"))
-        if capability_id in SUPPORTED_EXECUTION_CAPABILITIES and capability_id not in capabilities:
+        risk_tier = _safe_string(step.get("risk_tier")) or ""
+        if capability_id and _execution_risk_tier(risk_tier) and capability_id not in capabilities:
             capabilities.append(capability_id)
     return capabilities
+
+
+def _execution_risk_tier(risk_tier: str) -> bool:
+    return risk_tier in {"draft_only", "reversible_write", "expensive_compute", "artifact_export"}
 
 
 def _lifecycle_summary(entry: LedgerEntry) -> dict[str, Any] | None:

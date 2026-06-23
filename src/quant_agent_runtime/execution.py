@@ -6,10 +6,7 @@ from typing import Any
 from uuid import uuid4
 
 from quant_agent_runtime.app_clients import AgentAppClient, AppClientError
-from quant_agent_runtime.capability_discovery import (
-    CapabilityDiscoveryService,
-    SUPPORTED_EXECUTION_CAPABILITIES,
-)
+from quant_agent_runtime.capability_discovery import CapabilityDiscoveryService
 from quant_agent_runtime.contracts import QuantSuiteContractLoader
 from quant_agent_runtime.governance import current_governance_actor
 from quant_agent_runtime.ledger import InMemoryLedger
@@ -200,14 +197,6 @@ class ExecutionService:
         capability_id: str,
         app_id: str,
     ) -> None:
-        if capability_id not in SUPPORTED_EXECUTION_CAPABILITIES:
-            raise _rejected(
-                "unsupported_execution_capability",
-                "Only supported confirmed review-draft app actions can execute in this slice.",
-                step_id=step_id,
-                capability_id=capability_id or None,
-            )
-
         plan_state = run_state_for_entry(entry)
         if plan_state == "waiting_for_input":
             raise _rejected(
@@ -265,6 +254,16 @@ class ExecutionService:
                 step_id=step_id,
                 capability_id=capability_id or None,
             )
+        risk_tier = str(capability.get("risk_tier") or "")
+        if risk_tier == "workflow_preflight" or (
+            risk_tier == "read_only" and capability.get("execution_supported") is not True
+        ):
+            raise _rejected(
+                "unsupported_execution_capability",
+                "The recorded plan step is not an executable app-owned action.",
+                step_id=step_id,
+                capability_id=capability_id or None,
+            )
 
         action_input = step.get("action_input") if isinstance(step.get("action_input"), dict) else {}
         action_input_issues = find_unsafe_payload_issues(action_input, root="action_input")
@@ -285,7 +284,9 @@ class ExecutionService:
                 )
             )
 
-        if not _confirmed_record(entry, step_id, capability_id):
+        if (bool(step.get("requires_confirmation")) or _confirmation_required(entry, step_id, capability_id)) and not _confirmed_record(
+            entry, step_id, capability_id
+        ):
             raise _rejected(
                 "missing_confirmation_for_execution",
                 "The recorded plan step requires confirmation before execution.",
@@ -428,6 +429,19 @@ def _confirmed_record(entry: LedgerEntry, step_id: str, capability_id: str) -> d
         ):
             return record
     return None
+
+
+def _confirmation_required(entry: LedgerEntry, step_id: str, capability_id: str) -> bool:
+    snapshot = entry.plan_snapshot if isinstance(entry.plan_snapshot, dict) else {}
+    required = snapshot.get("required_confirmations")
+    if not isinstance(required, list):
+        return False
+    return any(
+        isinstance(item, dict)
+        and item.get("step_id") == step_id
+        and item.get("capability_id") == capability_id
+        for item in required
+    )
 
 
 def _latest_action_request_preview(

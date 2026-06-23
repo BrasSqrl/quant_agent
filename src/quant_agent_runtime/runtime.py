@@ -467,7 +467,11 @@ def build_runtime() -> RuntimeContainer:
         capability_discovery=capability_discovery,
         governance=governance,
     )
-    orchestration = OrchestrationService(ledger=ledger, governance=governance)
+    orchestration = OrchestrationService(
+        ledger=ledger,
+        governance=governance,
+        capability_discovery=capability_discovery,
+    )
     plan_revision = PlanRevisionService(
         provider=model_provider,
         ledger=ledger,

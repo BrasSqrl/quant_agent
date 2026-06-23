@@ -18,6 +18,7 @@ from quant_agent_runtime.redaction import find_unsafe_payload_issues
 from quant_agent_runtime.run_state import run_state_for_entry
 from quant_agent_runtime.user_workflow import ensure_user_workflow_readiness
 from quant_agent_runtime.validation.errors import RuntimeValidationError
+from quant_agent_runtime.workflow_handoffs import action_input_with_workflow_handoffs
 
 PREFLIGHT_CONTRACT_SCHEMA = "agent_action_preflight.v1.schema.json"
 
@@ -92,7 +93,7 @@ class PreflightService:
             capability_id=capability_id or None,
         )
         ensure_step_action_allowed(entry, request.step_id, "run_preflight")
-        if app_id not in {"quant_data", "quant_monitoring"}:
+        if app_id not in {"quant_data", "quant_studio", "quant_monitoring"}:
             raise _rejected(
                 "unsupported_preflight_app",
                 "The recorded plan step is owned by an app without configured preflight routing.",
@@ -116,12 +117,30 @@ class PreflightService:
                 capability_id=capability_id or None,
             )
 
+        action_input = action_input_with_workflow_handoffs(entry, step, fail_on_missing=True)
+        action_input_issues = find_unsafe_payload_issues(action_input, root="action_input")
+        if action_input_issues:
+            raise RuntimeValidationError(
+                PlanValidationResult(
+                    status="rejected",
+                    errors=[
+                        issue.model_copy(
+                            update={
+                                "code": "unsafe_preflight_action_input",
+                                "step_id": request.step_id,
+                                "capability_id": capability_id or None,
+                            }
+                        )
+                        for issue in action_input_issues
+                    ],
+                )
+            )
         app_request = {
             "run_id": request.run_id,
             "step_id": request.step_id,
             "capability_id": capability_id,
             "context_summary": _safe_context(entry),
-            "action_input": step.get("action_input") if isinstance(step.get("action_input"), dict) else {},
+            "action_input": action_input,
         }
         try:
             preflight = self._app_client.create_preflight(

@@ -17,6 +17,7 @@ from quant_agent_runtime.redaction import find_unsafe_payload_issues
 from quant_agent_runtime.run_state import run_state_for_entry
 from quant_agent_runtime.user_workflow import ensure_user_workflow_consent
 from quant_agent_runtime.validation.errors import RuntimeValidationError
+from quant_agent_runtime.workflow_handoffs import action_input_with_workflow_handoffs
 
 
 ACTION_REQUEST_CONTRACT_SCHEMA = "agent_action_request.v1.schema.json"
@@ -122,7 +123,7 @@ class ActionRequestPreviewService:
                 capability_id=capability_id or None,
             )
 
-        action_input = step.get("action_input") if isinstance(step.get("action_input"), dict) else {}
+        action_input = action_input_with_workflow_handoffs(entry, step, fail_on_missing=True)
         action_input_issues = find_unsafe_payload_issues(action_input, root="action_input")
         if action_input_issues:
             raise RuntimeValidationError(

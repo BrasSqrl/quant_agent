@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from quant_agent_runtime.capability_discovery import SUPPORTED_EXECUTION_CAPABILITIES
+from quant_agent_runtime.capability_discovery import CapabilityDiscoveryService
 from quant_agent_runtime.external_approval import external_approval_summary_for_entry
 from quant_agent_runtime.ledger import InMemoryLedger
 from quant_agent_runtime.models import (
@@ -30,15 +30,31 @@ _TERMINAL_RUN_STATES = {
 
 
 class OrchestrationService:
-    def __init__(self, *, ledger: InMemoryLedger, governance: Any | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        ledger: InMemoryLedger,
+        governance: Any | None = None,
+        capability_discovery: CapabilityDiscoveryService | None = None,
+    ) -> None:
         self._ledger = ledger
         self._governance = governance
+        self._capability_discovery = capability_discovery
 
     def get_run_orchestration(self, run_id: str) -> RunOrchestrationResult:
         entry = self._ledger.get(run_id)
         if entry is None:
             raise _rejected("unknown_run", "No recorded run was found for the requested run_id.")
-        result = orchestration_for_entry(entry)
+        supported_execution_capabilities = None
+        if self._capability_discovery is not None:
+            try:
+                supported_execution_capabilities = self._capability_discovery.discover().supported_execution_capabilities
+            except Exception:
+                supported_execution_capabilities = None
+        result = orchestration_for_entry(
+            entry,
+            supported_execution_capabilities=supported_execution_capabilities,
+        )
         if self._governance is None:
             return result
         return result.model_copy(
@@ -52,7 +68,11 @@ class OrchestrationService:
         )
 
 
-def orchestration_for_entry(entry: LedgerEntry) -> RunOrchestrationResult:
+def orchestration_for_entry(
+    entry: LedgerEntry,
+    *,
+    supported_execution_capabilities: list[str] | None = None,
+) -> RunOrchestrationResult:
     snapshot = entry.plan_snapshot if isinstance(entry.plan_snapshot, dict) else {}
     raw_steps = snapshot.get("proposed_steps")
     steps_payload = raw_steps if isinstance(raw_steps, list) else []
@@ -77,6 +97,7 @@ def orchestration_for_entry(entry: LedgerEntry) -> RunOrchestrationResult:
             run_is_cancelled=run_is_cancelled,
             run_is_sample_reset=run_is_sample_reset,
             run_is_paused=run_is_paused,
+            supported_execution_capabilities=supported_execution_capabilities,
         )
         if current_step_id is None and _is_current_status(summary.status):
             current_step_id = summary.step_id
@@ -226,6 +247,7 @@ def _step_summary(
     run_is_cancelled: bool,
     run_is_sample_reset: bool,
     run_is_paused: bool,
+    supported_execution_capabilities: list[str] | None,
 ) -> OrchestrationStepSummary:
     step_id = str(step.get("step_id") or "")
     capability_id = str(step.get("capability_id") or "")
@@ -238,7 +260,11 @@ def _step_summary(
         step_id,
         capability_id,
     )
-    execution_supported = capability_id in SUPPORTED_EXECUTION_CAPABILITIES
+    execution_supported = (
+        capability_id in set(supported_execution_capabilities)
+        if supported_execution_capabilities is not None
+        else _snapshot_execution_supported(entry, capability_id, risk_tier)
+    )
 
     latest_preflight = _latest_preflight(entry, step_id, capability_id, app_id)
     latest_confirmation = _latest_confirmation(entry, step_id, capability_id)
@@ -448,6 +474,23 @@ def _confirmation_required(entry: LedgerEntry, step_id: str, capability_id: str)
         and item.get("capability_id") == capability_id
         for item in required
     )
+
+
+def _snapshot_execution_supported(entry: LedgerEntry, capability_id: str, risk_tier: str) -> bool:
+    execution_risk_tiers = {"draft_only", "reversible_write", "expensive_compute", "artifact_export"}
+    for capability in entry.capability_snapshot:
+        if not isinstance(capability, dict):
+            continue
+        if capability.get("capability_id") != capability_id:
+            continue
+        if capability.get("execution_supported") is True:
+            return capability.get("enabled", True) is True
+        if capability.get("execution_supported") is False:
+            return False
+        if risk_tier not in execution_risk_tiers:
+            return False
+        return capability.get("enabled", True) is True
+    return False
 
 
 def _latest_preflight(

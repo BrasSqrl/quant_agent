@@ -141,6 +141,15 @@ class FakePreflightAppClient:
         elif app_id == "quant_documentation":
             capabilities = [
                 {
+                    "capability_id": "quant_documentation.inspect_package",
+                    "app_id": "quant_documentation",
+                    "risk_tier": "read_only",
+                    "enabled": True,
+                    "preflight_required": False,
+                    "confirmation_required": False,
+                    "execution_supported": True,
+                },
+                {
                     "capability_id": "quant_documentation.create_draft_workspace",
                     "app_id": "quant_documentation",
                     "risk_tier": "draft_only",
@@ -148,7 +157,34 @@ class FakePreflightAppClient:
                     "preflight_required": False,
                     "confirmation_required": True,
                     "execution_supported": True,
-                }
+                },
+                {
+                    "capability_id": "quant_documentation.draft_section",
+                    "app_id": "quant_documentation",
+                    "risk_tier": "draft_only",
+                    "enabled": True,
+                    "preflight_required": False,
+                    "confirmation_required": True,
+                    "execution_supported": True,
+                },
+                {
+                    "capability_id": "quant_documentation.find_unsupported_claims",
+                    "app_id": "quant_documentation",
+                    "risk_tier": "read_only",
+                    "enabled": True,
+                    "preflight_required": False,
+                    "confirmation_required": False,
+                    "execution_supported": True,
+                },
+                {
+                    "capability_id": "quant_documentation.export_markdown_review_package",
+                    "app_id": "quant_documentation",
+                    "risk_tier": "artifact_export",
+                    "enabled": True,
+                    "preflight_required": False,
+                    "confirmation_required": True,
+                    "execution_supported": True,
+                },
             ]
         else:
             capabilities = []
@@ -334,11 +370,22 @@ def test_canonical_capability_example_is_loaded_and_mapped() -> None:
         "quant_documentation.inspect_package",
         "quant_documentation.create_draft_workspace",
         "quant_monitoring.validate_bundle",
+        "quant_data.register_source_reference",
+        "quant_data.create_eda_plan",
+        "quant_data.run_eda_review",
+        "quant_data.export_eda_handoff",
+        "quant_studio.run_model_readiness_check",
+        "quant_studio.fit_candidate_model",
+        "quant_studio.compare_candidate_runs",
+        "quant_studio.create_documentation_package",
+        "quant_documentation.draft_section",
+        "quant_documentation.find_unsupported_claims",
+        "quant_documentation.export_markdown_review_package",
     ]
     assert enabled_capabilities[1].confirmation_required is True
     assert enabled_capabilities[1].required_fields == ["target_summary"]
     assert any(
-        item.capability_id == "quant_studio.fit_candidate_model" and not item.enabled
+        item.capability_id == "quant_data.create_eda_plan" and item.enabled and item.confirmation_required
         for item in capabilities
     )
 

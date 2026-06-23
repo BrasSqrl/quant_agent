@@ -177,6 +177,15 @@ class FakePreflightAppClient:
         elif app_id == "quant_documentation":
             capabilities = [
                 {
+                    "capability_id": "quant_documentation.inspect_package",
+                    "app_id": "quant_documentation",
+                    "risk_tier": "read_only",
+                    "enabled": True,
+                    "preflight_required": False,
+                    "confirmation_required": False,
+                    "execution_supported": True,
+                },
+                {
                     "capability_id": "quant_documentation.create_draft_workspace",
                     "app_id": "quant_documentation",
                     "risk_tier": "draft_only",
@@ -184,7 +193,34 @@ class FakePreflightAppClient:
                     "preflight_required": False,
                     "confirmation_required": True,
                     "execution_supported": True,
-                }
+                },
+                {
+                    "capability_id": "quant_documentation.draft_section",
+                    "app_id": "quant_documentation",
+                    "risk_tier": "draft_only",
+                    "enabled": True,
+                    "preflight_required": False,
+                    "confirmation_required": True,
+                    "execution_supported": True,
+                },
+                {
+                    "capability_id": "quant_documentation.find_unsupported_claims",
+                    "app_id": "quant_documentation",
+                    "risk_tier": "read_only",
+                    "enabled": True,
+                    "preflight_required": False,
+                    "confirmation_required": False,
+                    "execution_supported": True,
+                },
+                {
+                    "capability_id": "quant_documentation.export_markdown_review_package",
+                    "app_id": "quant_documentation",
+                    "risk_tier": "artifact_export",
+                    "enabled": True,
+                    "preflight_required": False,
+                    "confirmation_required": True,
+                    "execution_supported": True,
+                },
             ]
         else:
             capabilities = []

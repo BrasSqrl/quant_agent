@@ -16,12 +16,6 @@ DISCOVERABLE_AGENT_APPS = (
     "quant_monitoring",
 )
 CAPABILITY_DISCOVERY_DATA_POLICY = "summaries_and_references_only"
-SUPPORTED_EXECUTION_CAPABILITIES = frozenset(
-    {
-        "quant_studio.prepare_model_config_draft",
-        "quant_documentation.create_draft_workspace",
-    }
-)
 
 
 @dataclass(frozen=True)
@@ -184,7 +178,7 @@ class CapabilityDiscoveryService:
                         app_id=app_id,
                         capability_id=canonical.capability_id,
                     )
-                elif canonical.capability_id in SUPPORTED_EXECUTION_CAPABILITIES:
+                elif _canonical_execution_candidate(canonical):
                     warning = _warning(
                         "canonical_execution_capability_not_advertised",
                         "A canonical app-owned execution capability is not currently advertised by its app.",
@@ -325,7 +319,11 @@ def _capability_reconciliation_warning(
             app_id=expected_app_id,
             capability_id=capability_id,
         )
-    if not canonical.preflight_required and not _execution_capability_supported(discovered, canonical):
+    if (
+        not canonical.preflight_required
+        and _canonical_execution_candidate(canonical)
+        and not _execution_capability_supported(discovered, canonical)
+    ):
         return _warning(
             "capability_not_preflight_or_execution_capable",
             "Discovered capability is canonical but is not a supported app-owned preflight or execution capability.",
@@ -339,12 +337,18 @@ def _execution_capability_supported(
     discovered: dict[str, Any],
     canonical: CapabilityDefinition,
 ) -> bool:
-    return (
-        canonical.capability_id in SUPPORTED_EXECUTION_CAPABILITIES
-        and canonical.confirmation_required
-        and not canonical.preflight_required
-        and discovered.get("execution_supported") is True
-    )
+    return canonical.enabled and discovered.get("execution_supported") is True
+
+
+def _canonical_execution_candidate(canonical: CapabilityDefinition) -> bool:
+    if canonical.execution_supported:
+        return True
+    return canonical.risk_tier.value in {
+        "draft_only",
+        "reversible_write",
+        "expensive_compute",
+        "artifact_export",
+    }
 
 
 def _warning(

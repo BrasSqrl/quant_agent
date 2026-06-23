@@ -63,6 +63,7 @@ class CapabilityDefinition(StrictModel):
     required_fields: list[str] = Field(default_factory=list)
     preflight_required: bool = False
     confirmation_required: bool = False
+    execution_supported: bool | None = None
 
 
 class PolicySettings(StrictModel):

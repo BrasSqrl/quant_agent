@@ -87,6 +87,11 @@ class QuantSuiteContractLoader:
                     ],
                     preflight_required=item.get("preflight_required", False),
                     confirmation_required=item.get("confirmation_required", False),
+                    execution_supported=(
+                        item.get("execution_supported")
+                        if "execution_supported" in item
+                        else None
+                    ),
                 )
             )
         return capabilities

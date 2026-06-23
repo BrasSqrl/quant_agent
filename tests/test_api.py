@@ -116,7 +116,11 @@ class FakePreflightAppClient:
         )
         if self.error is not None:
             raise self.error
-        response = self.responses_by_capability.get(capability_id, self.response)
+        response = self.responses_by_capability.get(capability_id)
+        if response is None and self.response.get("capability_id") == capability_id:
+            response = self.response
+        if response is None:
+            response = _valid_preflight_response(capability_id=capability_id, app_id=app_id)
         return dict(response)
 
     def execute_action(
@@ -138,10 +142,22 @@ class FakePreflightAppClient:
         response = self.execution_responses_by_capability.get(capability_id)
         if response is None and self.execution_response.get("capability_id") == capability_id:
             response = self.execution_response
-        if response is None and capability_id == "quant_studio.prepare_model_config_draft":
-            response = _valid_action_result()
-        if response is None and capability_id == "quant_documentation.create_draft_workspace":
-            response = _valid_documentation_action_result(step_id="step_4")
+        if response is None and capability_id.startswith("quant_data."):
+            action_request = payload.get("action_request") if isinstance(payload, dict) else {}
+            response = _valid_action_result(
+                capability_id=capability_id,
+                app_id="quant_data",
+                step_id=str(action_request.get("step_id") or "step_data"),
+            )
+        if response is None and capability_id.startswith("quant_studio."):
+            response = _valid_action_result(capability_id=capability_id)
+        if response is None and capability_id.startswith("quant_documentation."):
+            action_request = payload.get("action_request") if isinstance(payload, dict) else {}
+            response = _valid_action_result(
+                capability_id=capability_id,
+                app_id="quant_documentation",
+                step_id=str(action_request.get("step_id") or "step_documentation"),
+            )
         return copy.deepcopy(response or self.execution_response)
 
     def reset_sample_workspaces(self) -> dict[str, Any]:
@@ -203,7 +219,11 @@ def runtime_with_preflight_client(
             capability_discovery=discovery,
             governance=governance,
         ),
-        orchestration=OrchestrationService(ledger=ledger, governance=governance),
+        orchestration=OrchestrationService(
+            ledger=ledger,
+            governance=governance,
+            capability_discovery=discovery,
+        ),
         plan_revision=PlanRevisionService(
             provider=FakePlanProvider(provider_status=provider_status),
             ledger=ledger,
@@ -249,10 +269,29 @@ def _valid_preflight_response(
     capability_id: str = "quant_data.run_source_preflight",
     app_id: str = "quant_data",
 ) -> dict[str, Any]:
-    reference_type = "source_reference" if app_id == "quant_data" else "monitoring_bundle"
-    reference_id = "source_ref_test" if app_id == "quant_data" else "bundle_ref_test"
-    evidence_check_id = "source_summary_present" if app_id == "quant_data" else "bundle_summary_present"
-    summary_key = "source_summary" if app_id == "quant_data" else "bundle_summary"
+    if app_id == "quant_data":
+        if capability_id == "quant_data.run_eda_review":
+            reference_type = "eda_plan"
+            reference_id = "eda_plan_test"
+        else:
+            reference_type = "source_reference"
+            reference_id = "source_ref_test"
+        evidence_check_id = "source_summary_present"
+        summary_key = "source_summary"
+    elif app_id == "quant_studio":
+        reference_type = (
+            "model_readiness_summary"
+            if capability_id == "quant_studio.run_model_readiness_check"
+            else "model_config_draft"
+        )
+        reference_id = "model_readiness_summary_test" if reference_type == "model_readiness_summary" else "model_config_draft_test"
+        evidence_check_id = "target_summary_present"
+        summary_key = "target_summary"
+    else:
+        reference_type = "monitoring_bundle"
+        reference_id = "bundle_ref_test"
+        evidence_check_id = "bundle_summary_present"
+        summary_key = "bundle_summary"
     return {
         "schema_version": "1.0",
         "data_policy": "summaries_and_references_only",
@@ -271,13 +310,7 @@ def _valid_preflight_response(
         "stale_state_signals": [],
         "estimated_cost": {"cost_label": "none", "billable": False},
         "estimated_duration_seconds": 5,
-        "safe_artifact_references": [
-            {
-                "reference_type": reference_type,
-                "reference_id": reference_id,
-                "label": "Safe preflight reference",
-            }
-        ],
+        "safe_artifact_references": _preflight_references_for(capability_id, reference_type, reference_id),
         "app_validation_evidence": [
             {
                 "check_id": evidence_check_id,
@@ -290,6 +323,25 @@ def _valid_preflight_response(
     }
 
 
+def _preflight_references_for(capability_id: str, reference_type: str, reference_id: str) -> list[dict[str, str]]:
+    references = [
+        {
+            "reference_type": reference_type,
+            "reference_id": reference_id,
+            "label": "Safe preflight reference",
+        }
+    ]
+    if capability_id == "quant_data.run_source_preflight":
+        references.append(
+            {
+                "reference_type": "preflight_summary",
+                "reference_id": "preflight_summary_test",
+                "label": "Source preflight summary",
+            }
+        )
+    return references
+
+
 def _valid_action_result(
     execution_status: str = "succeeded",
     *,
@@ -297,6 +349,86 @@ def _valid_action_result(
     app_id: str = "quant_studio",
     step_id: str = "step_2",
 ) -> dict[str, Any]:
+    output_reference_by_capability = {
+        "quant_data.register_source_reference": {
+            "reference_type": "source_reference",
+            "reference_id": "source_reference_test",
+            "label": "Source reference",
+        },
+        "quant_data.create_eda_plan": {
+            "reference_type": "eda_plan",
+            "reference_id": "eda_plan_test",
+            "label": "EDA plan",
+        },
+        "quant_data.run_eda_review": {
+            "reference_type": "eda_package",
+            "reference_id": "eda_package_test",
+            "label": "EDA package",
+        },
+        "quant_data.export_eda_handoff": {
+            "reference_type": "eda_handoff",
+            "reference_id": "eda_handoff_test",
+            "label": "EDA handoff",
+        },
+        "quant_studio.prepare_model_config_draft": {
+            "reference_type": "model_config_draft",
+            "reference_id": "model_config_draft_test",
+            "label": "Model configuration draft",
+        },
+        "quant_studio.fit_candidate_model": {
+            "reference_type": "studio_run",
+            "reference_id": "studio_run_test",
+            "label": "Candidate Studio run",
+        },
+        "quant_studio.compare_candidate_runs": {
+            "reference_type": "champion_recommendation",
+            "reference_id": "champion_recommendation_test",
+            "label": "Champion recommendation",
+        },
+        "quant_studio.create_documentation_package": {
+            "reference_type": "documentation_package",
+            "reference_id": "documentation_package_test",
+            "label": "Documentation package",
+        },
+        "quant_documentation.inspect_package": {
+            "reference_type": "documentation_package_summary",
+            "reference_id": "documentation_package_summary_test",
+            "label": "Documentation package summary",
+        },
+        "quant_documentation.create_draft_workspace": {
+            "reference_type": "documentation_draft",
+            "reference_id": "documentation_draft_workspace_test",
+            "label": "Documentation draft workspace",
+        },
+        "quant_documentation.draft_section": {
+            "reference_type": "draft_section",
+            "reference_id": "draft_section_test",
+            "label": "Reviewable draft section",
+        },
+        "quant_documentation.find_unsupported_claims": {
+            "reference_type": "claim_review_summary",
+            "reference_id": "claim_review_summary_test",
+            "label": "Claim review summary",
+        },
+        "quant_documentation.export_markdown_review_package": {
+            "reference_type": "documentation_review_package",
+            "reference_id": "documentation_review_package_test",
+            "label": "Documentation review package",
+        },
+    }
+    output_reference = output_reference_by_capability.get(
+        capability_id,
+        output_reference_by_capability["quant_studio.prepare_model_config_draft"],
+    )
+    output_references = [output_reference]
+    if capability_id == "quant_studio.create_documentation_package":
+        output_references.append(
+            {
+                "reference_type": "monitoring_bundle",
+                "reference_id": "monitoring_bundle_test",
+                "label": "Monitoring bundle",
+            }
+        )
     return {
         "schema_version": "1.0",
         "data_policy": "summaries_and_references_only",
@@ -306,16 +438,22 @@ def _valid_action_result(
         "app_id": app_id,
         "execution_status": execution_status,
         "accepted_input_summary": {
-            "target_summary": "Default flag is the candidate target.",
+            (
+                "source_summary"
+                if app_id == "quant_data"
+                else "package_summary"
+                if app_id == "quant_documentation"
+                else "target_summary"
+            ): (
+                "Reviewed source summary."
+                if app_id == "quant_data"
+                else "Documentation package summary is ready."
+                if app_id == "quant_documentation"
+                else "Default flag is the candidate target."
+            ),
             "lifecycle_id": "lifecycle_test",
         },
-        "output_references": [
-            {
-                "reference_type": "model_config_draft",
-                "reference_id": "model_config_draft_test",
-                "label": "Model configuration draft",
-            }
-        ],
+        "output_references": output_references,
         "warnings": [],
         "recoverable_errors": [],
         "terminal_errors": [],
@@ -435,6 +573,24 @@ def _capabilities_payload(app_id: str, capabilities: list[dict[str, Any]] | None
         if app_id == "quant_data":
             capabilities = [
                 {
+                    "capability_id": "quant_data.register_source_reference",
+                    "app_id": "quant_data",
+                    "version": "1.0",
+                    "display_name": "Register source reference",
+                    "summary": "Registers a summarized source reference for a governed Quant Data workflow.",
+                    "risk_tier": "reversible_write",
+                    "enabled": True,
+                    "preflight_required": False,
+                    "confirmation_required": True,
+                    "execution_supported": True,
+                    "idempotent": True,
+                    "reversible": True,
+                    "side_effects": ["app_owned_reference_write_after_confirmation"],
+                    "input_schema": {"required_fields": ["source_summary"]},
+                    "output_schema": {"safe_reference_types": ["source_reference"]},
+                    "data_policy": "summaries_and_references_only",
+                },
+                {
                     "capability_id": "quant_data.run_source_preflight",
                     "app_id": "quant_data",
                     "version": "1.0-draft",
@@ -450,10 +606,82 @@ def _capabilities_payload(app_id: str, capabilities: list[dict[str, Any]] | None
                     "input_schema": {"required_fields": ["source_summary"]},
                     "output_schema": {"safe_reference_types": ["preflight_summary", "source_reference"]},
                     "data_policy": "summaries_and_references_only",
-                }
+                },
+                {
+                    "capability_id": "quant_data.create_eda_plan",
+                    "app_id": "quant_data",
+                    "version": "1.0",
+                    "display_name": "Create EDA plan",
+                    "summary": "Creates a safe reviewable EDA plan from source summaries.",
+                    "risk_tier": "draft_only",
+                    "enabled": True,
+                    "preflight_required": False,
+                    "confirmation_required": True,
+                    "execution_supported": True,
+                    "idempotent": True,
+                    "reversible": True,
+                    "side_effects": ["draft_only_after_confirmation"],
+                    "input_schema": {"required_fields": ["source_summary"]},
+                    "output_schema": {"safe_reference_types": ["eda_plan"]},
+                    "data_policy": "summaries_and_references_only",
+                },
+                {
+                    "capability_id": "quant_data.run_eda_review",
+                    "app_id": "quant_data",
+                    "version": "1.0",
+                    "display_name": "Run EDA review",
+                    "summary": "Runs app-owned EDA review from safe source references and returns summaries only.",
+                    "risk_tier": "expensive_compute",
+                    "enabled": True,
+                    "preflight_required": True,
+                    "confirmation_required": True,
+                    "execution_supported": True,
+                    "idempotent": False,
+                    "reversible": False,
+                    "side_effects": ["app_owned_compute_after_confirmation"],
+                    "input_schema": {"required_fields": ["source_summary"]},
+                    "output_schema": {"safe_reference_types": ["eda_package"]},
+                    "data_policy": "summaries_and_references_only",
+                },
+                {
+                    "capability_id": "quant_data.export_eda_handoff",
+                    "app_id": "quant_data",
+                    "version": "1.0",
+                    "display_name": "Export EDA handoff",
+                    "summary": "Exports a safe EDA handoff reference for Quant Studio.",
+                    "risk_tier": "artifact_export",
+                    "enabled": True,
+                    "preflight_required": False,
+                    "confirmation_required": True,
+                    "execution_supported": True,
+                    "idempotent": True,
+                    "reversible": True,
+                    "side_effects": ["safe_artifact_reference_export_after_confirmation"],
+                    "input_schema": {"required_fields": ["source_summary"]},
+                    "output_schema": {"safe_reference_types": ["eda_handoff"]},
+                    "data_policy": "summaries_and_references_only",
+                },
             ]
         elif app_id == "quant_studio":
             capabilities = [
+                {
+                    "capability_id": "quant_studio.run_model_readiness_check",
+                    "app_id": "quant_studio",
+                    "version": "1.0",
+                    "display_name": "Run model readiness check",
+                    "summary": "Checks Studio modeling readiness from safe target and handoff summaries.",
+                    "risk_tier": "workflow_preflight",
+                    "enabled": True,
+                    "preflight_required": True,
+                    "confirmation_required": False,
+                    "execution_supported": False,
+                    "idempotent": True,
+                    "reversible": True,
+                    "side_effects": ["none_preflight_only"],
+                    "input_schema": {"required_fields": ["target_summary"]},
+                    "output_schema": {"safe_reference_types": ["model_readiness_summary"]},
+                    "data_policy": "summaries_and_references_only",
+                },
                 {
                     "capability_id": "quant_studio.prepare_model_config_draft",
                     "app_id": "quant_studio",
@@ -471,10 +699,82 @@ def _capabilities_payload(app_id: str, capabilities: list[dict[str, Any]] | None
                     "input_schema": {"required_fields": ["target_summary"]},
                     "output_schema": {"safe_reference_types": ["model_config_draft"]},
                     "data_policy": "summaries_and_references_only",
-                }
+                },
+                {
+                    "capability_id": "quant_studio.fit_candidate_model",
+                    "app_id": "quant_studio",
+                    "version": "1.0",
+                    "display_name": "Fit candidate model",
+                    "summary": "Runs an app-owned candidate model fit and returns safe model-run references.",
+                    "risk_tier": "expensive_compute",
+                    "enabled": True,
+                    "preflight_required": True,
+                    "confirmation_required": True,
+                    "execution_supported": True,
+                    "idempotent": False,
+                    "reversible": False,
+                    "side_effects": ["app_owned_model_compute_after_confirmation"],
+                    "input_schema": {"required_fields": ["target_summary"]},
+                    "output_schema": {"safe_reference_types": ["studio_run"]},
+                    "data_policy": "summaries_and_references_only",
+                },
+                {
+                    "capability_id": "quant_studio.compare_candidate_runs",
+                    "app_id": "quant_studio",
+                    "version": "1.0",
+                    "display_name": "Compare candidate runs",
+                    "summary": "Compares safe candidate run summaries and creates a reviewable recommendation.",
+                    "risk_tier": "draft_only",
+                    "enabled": True,
+                    "preflight_required": False,
+                    "confirmation_required": True,
+                    "execution_supported": True,
+                    "idempotent": True,
+                    "reversible": True,
+                    "side_effects": ["draft_only_after_confirmation"],
+                    "input_schema": {"required_fields": ["target_summary"]},
+                    "output_schema": {"safe_reference_types": ["champion_recommendation"]},
+                    "data_policy": "summaries_and_references_only",
+                },
+                {
+                    "capability_id": "quant_studio.create_documentation_package",
+                    "app_id": "quant_studio",
+                    "version": "1.0",
+                    "display_name": "Create documentation package",
+                    "summary": "Creates safe documentation and monitoring package references.",
+                    "risk_tier": "artifact_export",
+                    "enabled": True,
+                    "preflight_required": False,
+                    "confirmation_required": True,
+                    "execution_supported": True,
+                    "idempotent": True,
+                    "reversible": True,
+                    "side_effects": ["safe_artifact_reference_export_after_confirmation"],
+                    "input_schema": {"required_fields": ["target_summary"]},
+                    "output_schema": {"safe_reference_types": ["documentation_package", "monitoring_bundle"]},
+                    "data_policy": "summaries_and_references_only",
+                },
             ]
         elif app_id == "quant_documentation":
             capabilities = [
+                {
+                    "capability_id": "quant_documentation.inspect_package",
+                    "app_id": "quant_documentation",
+                    "version": "1.0-draft",
+                    "display_name": "Inspect documentation package",
+                    "summary": "Inspects safe package references and documentation readiness summaries.",
+                    "risk_tier": "read_only",
+                    "enabled": True,
+                    "preflight_required": False,
+                    "confirmation_required": False,
+                    "execution_supported": True,
+                    "idempotent": True,
+                    "reversible": True,
+                    "side_effects": ["none_read_only"],
+                    "input_schema": {"required_fields": ["package_summary"]},
+                    "output_schema": {"safe_reference_types": ["documentation_package_summary"]},
+                    "data_policy": "summaries_and_references_only",
+                },
                 {
                     "capability_id": "quant_documentation.create_draft_workspace",
                     "app_id": "quant_documentation",
@@ -492,7 +792,61 @@ def _capabilities_payload(app_id: str, capabilities: list[dict[str, Any]] | None
                     "input_schema": {"required_fields": ["package_summary"]},
                     "output_schema": {"safe_reference_types": ["documentation_draft"]},
                     "data_policy": "summaries_and_references_only",
-                }
+                },
+                {
+                    "capability_id": "quant_documentation.draft_section",
+                    "app_id": "quant_documentation",
+                    "version": "1.0",
+                    "display_name": "Draft documentation section",
+                    "summary": "Creates a reviewable draft-section reference from safe package evidence.",
+                    "risk_tier": "draft_only",
+                    "enabled": True,
+                    "preflight_required": False,
+                    "confirmation_required": True,
+                    "execution_supported": True,
+                    "idempotent": False,
+                    "reversible": True,
+                    "side_effects": ["draft_only_after_confirmation"],
+                    "input_schema": {"required_fields": ["package_summary"]},
+                    "output_schema": {"safe_reference_types": ["draft_section"]},
+                    "data_policy": "summaries_and_references_only",
+                },
+                {
+                    "capability_id": "quant_documentation.find_unsupported_claims",
+                    "app_id": "quant_documentation",
+                    "version": "1.0",
+                    "display_name": "Find unsupported documentation claims",
+                    "summary": "Reviews draft summaries for unsupported claims using safe citation references.",
+                    "risk_tier": "read_only",
+                    "enabled": True,
+                    "preflight_required": False,
+                    "confirmation_required": False,
+                    "execution_supported": True,
+                    "idempotent": True,
+                    "reversible": True,
+                    "side_effects": ["none_read_only"],
+                    "input_schema": {"required_fields": ["package_summary"]},
+                    "output_schema": {"safe_reference_types": ["claim_review_summary"]},
+                    "data_policy": "summaries_and_references_only",
+                },
+                {
+                    "capability_id": "quant_documentation.export_markdown_review_package",
+                    "app_id": "quant_documentation",
+                    "version": "1.0",
+                    "display_name": "Export Markdown review package",
+                    "summary": "Creates a safe Markdown review package reference after claim review.",
+                    "risk_tier": "artifact_export",
+                    "enabled": True,
+                    "preflight_required": False,
+                    "confirmation_required": True,
+                    "execution_supported": True,
+                    "idempotent": True,
+                    "reversible": True,
+                    "side_effects": ["safe_artifact_reference_export_after_confirmation"],
+                    "input_schema": {"required_fields": ["package_summary"]},
+                    "output_schema": {"safe_reference_types": ["documentation_review_package"]},
+                    "data_policy": "summaries_and_references_only",
+                },
             ]
         elif app_id == "quant_monitoring":
             capabilities = [
@@ -994,6 +1348,7 @@ def _create_documentation_preview(
     client: TestClient,
     plan_payload: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    _complete_documentation_inspection_step(client, plan_payload)
     documentation_step = _step_for_capability(
         plan_payload,
         "quant_documentation.create_draft_workspace",
@@ -1013,6 +1368,52 @@ def _create_documentation_preview(
     )
     assert preview_response.status_code == 200
     return documentation_step, preview_response.json()
+
+
+def _complete_documentation_inspection_step(
+    client: TestClient,
+    plan_payload: dict[str, Any],
+) -> None:
+    inspection_step = next(
+        (
+            step
+            for step in plan_payload["plan"]["proposed_steps"]
+            if step["capability_id"] == "quant_documentation.inspect_package"
+        ),
+        None,
+    )
+    if inspection_step is None:
+        return
+    orchestration_response = client.get(f"/runs/{plan_payload['run_id']}/orchestration")
+    assert orchestration_response.status_code == 200
+    inspection_summary = next(
+        (
+            step
+            for step in orchestration_response.json()["steps"]
+            if step["step_id"] == inspection_step["step_id"]
+        ),
+        None,
+    )
+    if inspection_summary is None or inspection_summary["status"] in {
+        "completed",
+        "completed_with_warnings",
+        "informational",
+    }:
+        return
+    if inspection_summary["status"] == "ready_for_action_request":
+        preview_response = client.post(
+            "/action-requests",
+            json={
+                "run_id": plan_payload["run_id"],
+                "step_id": inspection_step["step_id"],
+            },
+        )
+        assert preview_response.status_code == 200
+    execution_response = client.post(
+        "/executions",
+        json={"run_id": plan_payload["run_id"], "step_id": inspection_step["step_id"]},
+    )
+    assert execution_response.status_code == 200
 
 
 def _complete_documentation_step(
@@ -1035,6 +1436,7 @@ def _advance_to_studio_step(client: TestClient, plan_payload: dict[str, Any]) ->
 def _advance_to_documentation_step(client: TestClient, plan_payload: dict[str, Any]) -> None:
     _advance_to_studio_step(client, plan_payload)
     _complete_studio_step(client, plan_payload)
+    _complete_documentation_inspection_step(client, plan_payload)
 
 
 def _advance_to_monitoring_step(client: TestClient, plan_payload: dict[str, Any]) -> None:
@@ -1189,6 +1591,9 @@ def test_runtime_manifest_returns_supported_modes(monkeypatch: pytest.MonkeyPatc
     assert manifest["supported_preflight_capabilities"] == [
         "quant_data.run_source_preflight",
         "quant_monitoring.validate_bundle",
+        "quant_data.run_eda_review",
+        "quant_studio.run_model_readiness_check",
+        "quant_studio.fit_candidate_model",
     ]
     assert manifest["capability_discovery"]["discovered_apps"] == [
         "quant_data",
@@ -1201,14 +1606,39 @@ def test_runtime_manifest_returns_supported_modes(monkeypatch: pytest.MonkeyPatc
     assert manifest["capability_discovery"]["supported_preflight_capabilities"] == [
         "quant_data.run_source_preflight",
         "quant_monitoring.validate_bundle",
+        "quant_data.run_eda_review",
+        "quant_studio.run_model_readiness_check",
+        "quant_studio.fit_candidate_model",
     ]
     assert manifest["supported_execution_capabilities"] == [
         "quant_studio.prepare_model_config_draft",
+        "quant_documentation.inspect_package",
         "quant_documentation.create_draft_workspace",
+        "quant_data.register_source_reference",
+        "quant_data.create_eda_plan",
+        "quant_data.run_eda_review",
+        "quant_data.export_eda_handoff",
+        "quant_studio.fit_candidate_model",
+        "quant_studio.compare_candidate_runs",
+        "quant_studio.create_documentation_package",
+        "quant_documentation.draft_section",
+        "quant_documentation.find_unsupported_claims",
+        "quant_documentation.export_markdown_review_package",
     ]
     assert manifest["capability_discovery"]["supported_execution_capabilities"] == [
         "quant_studio.prepare_model_config_draft",
+        "quant_documentation.inspect_package",
         "quant_documentation.create_draft_workspace",
+        "quant_data.register_source_reference",
+        "quant_data.create_eda_plan",
+        "quant_data.run_eda_review",
+        "quant_data.export_eda_handoff",
+        "quant_studio.fit_candidate_model",
+        "quant_studio.compare_candidate_runs",
+        "quant_studio.create_documentation_package",
+        "quant_documentation.draft_section",
+        "quant_documentation.find_unsupported_claims",
+        "quant_documentation.export_markdown_review_package",
     ]
     governance = manifest["governance_summary"]
     assert governance["policy_pack_id"] == "quant_agent_local_governance_policy_pack_v1"
@@ -1780,6 +2210,7 @@ def test_full_user_owned_guided_draft_path_and_refreshed_gate_state() -> None:
     ]
     assert [call["capability_id"] for call in app_client.execution_calls] == [
         "quant_studio.prepare_model_config_draft",
+        "quant_documentation.inspect_package",
         "quant_documentation.create_draft_workspace",
     ]
 
@@ -1797,7 +2228,7 @@ def test_full_user_owned_guided_draft_path_and_refreshed_gate_state() -> None:
     assert orchestration["readiness_summary"]["status"] == "ready"
     assert orchestration["consent_summary"]["status"] == "consented"
     assert orchestration["ledger_summary"]["preflight_count"] == 2
-    assert orchestration["ledger_summary"]["action_result_count"] == 2
+    assert orchestration["ledger_summary"]["action_result_count"] == 3
 
     entry = runtime.planner.ledger.get(plan_payload["run_id"])
     assert entry is not None
@@ -2302,7 +2733,7 @@ def test_user_owned_phase8_certification_path_matches_expected_fixture(tmp_path:
         expected["expected_guided_preflight_capabilities"]
     )
     assert [record["capability_id"] for record in certified_ledger["action_results"]] == (
-        expected["expected_guided_execution_capabilities"]
+        expected["expected_action_result_capabilities"]
     )
     assert [event["event_type"] for event in certified_ledger["recovery_events"][:4]] == (
         expected["expected_user_gate_event_order"]
@@ -6398,10 +6829,26 @@ def test_runtime_manifest_reports_unavailable_app_capability_discovery() -> None
     discovery = response.json()["capability_discovery"]
     assert discovery["discovered_apps"] == ["quant_data", "quant_studio", "quant_documentation"]
     assert discovery["unavailable_apps"] == ["quant_monitoring"]
-    assert discovery["supported_preflight_capabilities"] == ["quant_data.run_source_preflight"]
+    assert discovery["supported_preflight_capabilities"] == [
+        "quant_data.run_source_preflight",
+        "quant_data.run_eda_review",
+        "quant_studio.run_model_readiness_check",
+        "quant_studio.fit_candidate_model",
+    ]
     assert discovery["supported_execution_capabilities"] == [
         "quant_studio.prepare_model_config_draft",
+        "quant_documentation.inspect_package",
         "quant_documentation.create_draft_workspace",
+        "quant_data.register_source_reference",
+        "quant_data.create_eda_plan",
+        "quant_data.run_eda_review",
+        "quant_data.export_eda_handoff",
+        "quant_studio.fit_candidate_model",
+        "quant_studio.compare_candidate_runs",
+        "quant_studio.create_documentation_package",
+        "quant_documentation.draft_section",
+        "quant_documentation.find_unsupported_claims",
+        "quant_documentation.export_markdown_review_package",
     ]
     assert "quant_monitoring.validate_bundle" not in response.json()["supported_preflight_capabilities"]
     assert discovery["reconciliation_warnings"][0]["code"] == "app_capability_discovery_unavailable"
@@ -6424,7 +6871,11 @@ def test_runtime_manifest_rejects_unsafe_capability_discovery_payload() -> None:
     payload = response.json()
     discovery = payload["capability_discovery"]
     assert discovery["unavailable_apps"] == ["quant_data"]
-    assert payload["supported_preflight_capabilities"] == ["quant_monitoring.validate_bundle"]
+    assert payload["supported_preflight_capabilities"] == [
+        "quant_monitoring.validate_bundle",
+        "quant_studio.run_model_readiness_check",
+        "quant_studio.fit_candidate_model",
+    ]
     assert discovery["reconciliation_warnings"][0]["code"] == "unsafe_capability_discovery_payload"
     assert "private\\raw.csv" not in response.text
 
@@ -6452,7 +6903,11 @@ def test_runtime_manifest_warns_on_unknown_app_capability_without_supporting_it(
     discovery = response.json()["capability_discovery"]
     assert "quant_data.unknown_preflight" in discovery["unsupported_capability_ids"]
     assert "quant_data.run_source_preflight" in discovery["unsupported_capability_ids"]
-    assert discovery["supported_preflight_capabilities"] == ["quant_monitoring.validate_bundle"]
+    assert discovery["supported_preflight_capabilities"] == [
+        "quant_monitoring.validate_bundle",
+        "quant_studio.run_model_readiness_check",
+        "quant_studio.fit_candidate_model",
+    ]
     warning_codes = {warning["code"] for warning in discovery["reconciliation_warnings"]}
     assert "missing_canonical_capability" in warning_codes
     assert "canonical_capability_not_advertised" in warning_codes
@@ -6487,7 +6942,10 @@ def test_runtime_manifest_warns_on_app_and_preflight_policy_mismatch() -> None:
 
     assert response.status_code == 200
     discovery = response.json()["capability_discovery"]
-    assert discovery["supported_preflight_capabilities"] == []
+    assert discovery["supported_preflight_capabilities"] == [
+        "quant_studio.run_model_readiness_check",
+        "quant_studio.fit_candidate_model",
+    ]
     warning_codes = {warning["code"] for warning in discovery["reconciliation_warnings"]}
     assert "capability_app_mismatch" in warning_codes
     assert "capability_preflight_policy_mismatch" in warning_codes
@@ -6546,7 +7004,11 @@ def test_runtime_manifest_warns_on_malformed_capability_entries() -> None:
 
     assert response.status_code == 200
     discovery = response.json()["capability_discovery"]
-    assert discovery["supported_preflight_capabilities"] == ["quant_monitoring.validate_bundle"]
+    assert discovery["supported_preflight_capabilities"] == [
+        "quant_monitoring.validate_bundle",
+        "quant_studio.run_model_readiness_check",
+        "quant_studio.fit_candidate_model",
+    ]
     warning_codes = {warning["code"] for warning in discovery["reconciliation_warnings"]}
     assert "malformed_capability_entry" in warning_codes
     assert "canonical_capability_not_advertised" in warning_codes
@@ -7013,7 +7475,7 @@ def test_execution_runs_confirmed_studio_draft_step_and_validates_ledger() -> No
     assert payload["run_id"] == plan_payload["run_id"]
     assert payload["step_id"] == studio_step["step_id"]
     assert payload["capability_id"] == "quant_studio.prepare_model_config_draft"
-    assert payload["run_state"] == "waiting_for_confirmation"
+    assert payload["run_state"] == "ready_for_execution_preview"
     assert payload["validation"]["status"] == "valid"
     assert payload["ledger_recorded"] is True
     action_request = payload["action_request"]
@@ -7094,7 +7556,13 @@ def test_execution_runs_confirmed_documentation_draft_workspace_and_validates_le
     assert action_request["execution_permitted"] is True
     assert action_request["execution_request"] is True
     assert action_request["preview_idempotency_key"] == preview_payload["action_request"]["idempotency_key"]
-    assert action_request["action_input"] == documentation_step["action_input"]
+    assert action_request["action_input"]["package_summary"] == documentation_step["action_input"]["package_summary"]
+    assert action_request["action_input"]["documentation_package_summary"] == {
+        "reference_type": "documentation_package_summary",
+        "reference_id": "documentation_package_summary_test",
+        "label": "Documentation package summary",
+        "stored_in": "quant_agent_ledger",
+    }
     assert isinstance(action_request["action_input"]["package_summary"], dict)
     assert payload["action_result"]["execution_status"] == "succeeded"
     assert payload["action_result"]["output_references"][0]["reference_type"] == "documentation_draft"
@@ -7116,7 +7584,7 @@ def test_execution_runs_confirmed_documentation_draft_workspace_and_validates_le
     )
     entry = runtime.planner.ledger.list_entries()[0]
     assert [record["execution_permitted"] for record in entry.action_requests[-2:]] == [False, True]
-    assert len(entry.action_results) == 2
+    assert len(entry.action_results) == 3
     runtime.contract_loader.validate_agent_contract_payload(
         entry.action_requests[-1],
         "agent_action_request.v1.schema.json",
@@ -7156,8 +7624,8 @@ def test_documentation_execution_duplicate_call_returns_existing_result_without_
     ]
     assert len(documentation_calls) == 1
     entry = runtime.planner.ledger.list_entries()[0]
-    assert len(entry.action_requests) == 4
-    assert len(entry.action_results) == 2
+    assert len(entry.action_requests) == 6
+    assert len(entry.action_results) == 3
 
 
 def test_run_status_tracks_execution_lifecycle_states() -> None:
@@ -7233,10 +7701,11 @@ def test_run_status_tracks_execution_lifecycle_states() -> None:
     ).status_code == 200
     studio_completed_status = client.get(f"/runs/{plan_payload['run_id']}")
     assert studio_completed_status.status_code == 200
-    assert studio_completed_status.json()["run_state"] == "waiting_for_confirmation"
-    assert "confirm_step" in studio_completed_status.json()["allowed_next_actions"]
+    assert studio_completed_status.json()["run_state"] == "ready_for_execution_preview"
+    assert "preview_action_request" in studio_completed_status.json()["allowed_next_actions"]
     assert studio_completed_status.json()["latest_action_result"]["execution_status"] == "succeeded"
 
+    _complete_documentation_inspection_step(client, plan_payload)
     assert client.post(
         "/confirmations",
         json={
@@ -7592,8 +8061,8 @@ def test_retry_retries_recoverable_studio_failure_and_validates_ledger() -> None
     )
     assert payload["action_request"]["execution_permitted"] is True
     assert payload["action_result"]["execution_status"] == "succeeded"
-    assert payload["run_state"] == "waiting_for_confirmation"
-    assert payload["orchestration"]["run_state"] == "waiting_for_confirmation"
+    assert payload["run_state"] == "ready_for_execution_preview"
+    assert payload["orchestration"]["run_state"] == "ready_for_execution_preview"
     assert len(app_client.execution_calls) == 2
     assert app_client.execution_calls[-1]["payload"] == {"action_request": payload["action_request"]}
     entry = runtime.planner.ledger.list_entries()[0]
@@ -9872,10 +10341,10 @@ def test_demo_narrative_follows_expected_sample_fixture_and_reset_state() -> Non
     completed_payload = completed.json()
     assert completed_payload["demo_status"] == "completed"
     assert completed_payload["orchestration"]["run_state"] == "completed"
-    assert completed_payload["run_progress_summary"]["completed_steps"] == 4
-    assert completed_payload["run_progress_summary"]["informational_steps"] == 1
+    assert completed_payload["run_progress_summary"]["completed_steps"] == 5
+    assert completed_payload["run_progress_summary"]["informational_steps"] == 0
     assert completed_payload["safety_summary"]["ledger_record_counts"]["preflight_records"] == 2
-    assert completed_payload["safety_summary"]["ledger_record_counts"]["action_results"] == 2
+    assert completed_payload["safety_summary"]["ledger_record_counts"]["action_results"] == 3
 
     reset_preview = client.post(
         "/sample-reset-previews",
@@ -10782,7 +11251,11 @@ def test_preflight_rejects_malformed_app_response() -> None:
 
 
 def test_preflight_rejects_app_capability_mismatch() -> None:
-    app_client = FakePreflightAppClient(response=_valid_preflight_response())
+    app_client = FakePreflightAppClient(
+        responses_by_capability={
+            "quant_monitoring.validate_bundle": _valid_preflight_response(),
+        }
+    )
     client = TestClient(create_app(runtime_with_preflight_client(app_client)))
     plan_payload = _create_plan_with_lifecycle_reference(client)
     _advance_to_monitoring_step(client, plan_payload)
@@ -10848,7 +11321,7 @@ def test_manifest_advertises_scoped_workflow_runner() -> None:
     assert "app_workflow" in payload["supported_workflow_scopes"]
 
 
-def test_workflow_run_studio_scope_uses_enabled_capabilities_and_reports_gaps() -> None:
+def test_workflow_run_studio_scope_uses_all_enabled_capabilities_without_gaps() -> None:
     client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
 
     response = client.post(
@@ -10857,9 +11330,7 @@ def test_workflow_run_studio_scope_uses_enabled_capabilities_and_reports_gaps() 
             "goal": "Run only Quant Studio steps 1 through 5.",
             "workflow_scope": "app_workflow",
             "source_app": "quant_studio",
-            "context_summary": {
-                "target_summary": {"label": "Credit PD model target", "status": "ready"}
-            },
+            "context_summary": _safe_lifecycle_context(),
         },
     )
 
@@ -10867,16 +11338,80 @@ def test_workflow_run_studio_scope_uses_enabled_capabilities_and_reports_gaps() 
     payload = response.json()
     scope = payload["workflow_scope"]
     assert scope["selected_template_ids"] == ["quant_studio_steps_1_5"]
-    assert scope["selected_capability_ids"] == ["quant_studio.prepare_model_config_draft"]
-    assert "quant_studio.fit_candidate_model" in scope["omitted_capability_ids"]
-    assert any(
-        gap["capability_id"] == "quant_studio.fit_candidate_model"
-        and gap["status"] in {"app_endpoint_required", "planned_or_disabled"}
-        for gap in scope["workflow_gaps"]
-    )
+    assert scope["selected_capability_ids"] == [
+        "quant_studio.run_model_readiness_check",
+        "quant_studio.prepare_model_config_draft",
+        "quant_studio.fit_candidate_model",
+        "quant_studio.compare_candidate_runs",
+        "quant_studio.create_documentation_package",
+    ]
+    assert scope["omitted_capability_ids"] == []
+    assert scope["workflow_gaps"] == []
     assert [
         step["capability_id"] for step in payload["plan"]["proposed_steps"]
-    ] == ["quant_studio.prepare_model_config_draft"]
+    ] == scope["selected_capability_ids"]
+
+
+def test_workflow_run_data_scope_uses_all_enabled_capabilities_without_gaps() -> None:
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
+
+    response = client.post(
+        "/workflow-runs",
+        json={
+            "goal": "Run only Quant Data steps 1 through 5.",
+            "workflow_scope": "app_workflow",
+            "source_app": "quant_data",
+            "context_summary": _safe_lifecycle_context(lifecycle_state="data_review"),
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    scope = payload["workflow_scope"]
+    assert scope["selected_template_ids"] == ["quant_data_steps_1_5"]
+    assert scope["selected_capability_ids"] == [
+        "quant_data.register_source_reference",
+        "quant_data.run_source_preflight",
+        "quant_data.create_eda_plan",
+        "quant_data.run_eda_review",
+        "quant_data.export_eda_handoff",
+    ]
+    assert scope["omitted_capability_ids"] == []
+    assert scope["workflow_gaps"] == []
+    assert [step["capability_id"] for step in payload["plan"]["proposed_steps"]] == scope["selected_capability_ids"]
+
+
+def test_workflow_run_documentation_scope_uses_all_enabled_capabilities_without_gaps() -> None:
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
+
+    response = client.post(
+        "/workflow-runs",
+        json={
+            "goal": "Run only Quant Documentation steps 1 through 5.",
+            "workflow_scope": "app_workflow",
+            "source_app": "quant_documentation",
+            "context_summary": _safe_lifecycle_context(
+                lifecycle_state="documentation_review",
+                lifecycle_summary="Lifecycle has safe documentation package summaries.",
+            )
+            | {"package_summary": _safe_documentation_package_summary()},
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    scope = payload["workflow_scope"]
+    assert scope["selected_template_ids"] == ["quant_documentation_steps_1_5"]
+    assert scope["selected_capability_ids"] == [
+        "quant_documentation.inspect_package",
+        "quant_documentation.create_draft_workspace",
+        "quant_documentation.draft_section",
+        "quant_documentation.find_unsupported_claims",
+        "quant_documentation.export_markdown_review_package",
+    ]
+    assert scope["omitted_capability_ids"] == []
+    assert scope["workflow_gaps"] == []
+    assert [step["capability_id"] for step in payload["plan"]["proposed_steps"]] == scope["selected_capability_ids"]
 
 
 def test_workflow_run_stage_range_limits_selected_app_steps() -> None:
@@ -10890,9 +11425,7 @@ def test_workflow_run_stage_range_limits_selected_app_steps() -> None:
             "source_app": "quant_studio",
             "start_stage": "model_config_readiness",
             "end_stage": "model_config_readiness",
-            "context_summary": {
-                "target_summary": {"label": "Credit PD model target", "status": "ready"}
-            },
+            "context_summary": _safe_lifecycle_context(),
         },
     )
 
@@ -10912,9 +11445,32 @@ def test_workflow_advance_until_blocked_stops_at_manual_confirmation() -> None:
             "goal": "Run only Quant Studio steps 1 through 5.",
             "workflow_scope": "app_workflow",
             "source_app": "quant_studio",
-            "context_summary": {
-                "target_summary": {"label": "Credit PD model target", "status": "ready"}
-            },
+            "context_summary": _safe_lifecycle_context(),
+        },
+    ).json()
+
+    response = client.post(
+        f"/workflow-runs/{created['run_id']}/advance-until-blocked",
+        json={"advance_intent": "advance_workflow_until_blocked"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["advance_status"] == "manual_confirmation_required"
+    assert payload["completed_action_count"] == 1
+    assert payload["run_state"] == "waiting_for_confirmation"
+    assert payload["last_result"]["capability_id"] == "quant_studio.prepare_model_config_draft"
+
+
+def test_data_workflow_advance_until_blocked_stops_at_source_registration_confirmation() -> None:
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
+    created = client.post(
+        "/workflow-runs",
+        json={
+            "goal": "Run only Quant Data steps 1 through 5.",
+            "workflow_scope": "app_workflow",
+            "source_app": "quant_data",
+            "context_summary": _safe_lifecycle_context(lifecycle_state="data_review"),
         },
     ).json()
 
@@ -10928,6 +11484,395 @@ def test_workflow_advance_until_blocked_stops_at_manual_confirmation() -> None:
     assert payload["advance_status"] == "manual_confirmation_required"
     assert payload["completed_action_count"] == 0
     assert payload["run_state"] == "waiting_for_confirmation"
+    assert payload["last_result"]["capability_id"] == "quant_data.register_source_reference"
+
+
+def test_documentation_workflow_advance_until_blocked_stops_at_draft_workspace_confirmation() -> None:
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
+    created = client.post(
+        "/workflow-runs",
+        json={
+            "goal": "Run only Quant Documentation steps 1 through 5.",
+            "workflow_scope": "app_workflow",
+            "source_app": "quant_documentation",
+            "context_summary": _safe_lifecycle_context(lifecycle_state="documentation_review")
+            | {"package_summary": _safe_documentation_package_summary()},
+        },
+    ).json()
+
+    response = client.post(
+        f"/workflow-runs/{created['run_id']}/advance-until-blocked",
+        json={"advance_intent": "advance_workflow_until_blocked"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["advance_status"] == "manual_confirmation_required"
+    assert payload["completed_action_count"] == 2
+    assert payload["run_state"] == "waiting_for_confirmation"
+    assert payload["last_result"]["capability_id"] == "quant_documentation.create_draft_workspace"
+
+
+def test_studio_scoped_workflow_hands_draft_reference_to_fit_preflight() -> None:
+    app_client = FakePreflightAppClient(
+        responses_by_capability={
+            "quant_studio.run_model_readiness_check": _valid_preflight_response(
+                capability_id="quant_studio.run_model_readiness_check",
+                app_id="quant_studio",
+            ),
+            "quant_studio.fit_candidate_model": _valid_preflight_response(
+                capability_id="quant_studio.fit_candidate_model",
+                app_id="quant_studio",
+            ),
+        }
+    )
+    client = TestClient(create_app(runtime_with_preflight_client(app_client)))
+    created = client.post(
+        "/workflow-runs",
+        json={
+            "goal": "Run only Quant Studio steps 1 through 5.",
+            "workflow_scope": "app_workflow",
+            "source_app": "quant_studio",
+            "context_summary": _safe_lifecycle_context(),
+        },
+    ).json()
+    steps = created["plan"]["proposed_steps"]
+    draft_step = next(step for step in steps if step["capability_id"] == "quant_studio.prepare_model_config_draft")
+    fit_step = next(step for step in steps if step["capability_id"] == "quant_studio.fit_candidate_model")
+    app_client.execution_responses_by_capability["quant_studio.prepare_model_config_draft"] = _valid_action_result(
+        capability_id="quant_studio.prepare_model_config_draft",
+        step_id=draft_step["step_id"],
+    )
+
+    first_advance = client.post(
+        f"/workflow-runs/{created['run_id']}/advance-until-blocked",
+        json={"advance_intent": "advance_workflow_until_blocked"},
+    )
+    assert first_advance.status_code == 200
+    assert first_advance.json()["advance_status"] == "manual_confirmation_required"
+
+    confirmation = client.post(
+        "/confirmations",
+        json={
+            "run_id": created["run_id"],
+            "step_id": draft_step["step_id"],
+            "confirmation_intent": "approve_plan_step",
+        },
+    )
+    assert confirmation.status_code == 200
+    preview = client.post(
+        "/action-requests",
+        json={"run_id": created["run_id"], "step_id": draft_step["step_id"]},
+    )
+    assert preview.status_code == 200
+    execution = client.post(
+        "/executions",
+        json={"run_id": created["run_id"], "step_id": draft_step["step_id"]},
+    )
+    assert execution.status_code == 200
+
+    fit_preflight = client.post(
+        f"/workflow-runs/{created['run_id']}/advance",
+        json={"advance_intent": "advance_workflow_one_step"},
+    )
+
+    assert fit_preflight.status_code == 200
+    payload = fit_preflight.json()
+    assert payload["advance_status"] == "advanced"
+    assert payload["selected_action"] == "run_preflight"
+    assert payload["step_id"] == fit_step["step_id"]
+    assert app_client.calls[-1]["capability_id"] == "quant_studio.fit_candidate_model"
+    assert app_client.calls[-1]["payload"]["action_input"]["model_config_draft"]["reference_type"] == "model_config_draft"
+
+
+def test_data_scoped_workflow_hands_source_and_preflight_references_forward() -> None:
+    app_client = FakePreflightAppClient()
+    client = TestClient(create_app(runtime_with_preflight_client(app_client)))
+    created = client.post(
+        "/workflow-runs",
+        json={
+            "goal": "Run only Quant Data steps 1 through 5.",
+            "workflow_scope": "app_workflow",
+            "source_app": "quant_data",
+            "context_summary": _safe_lifecycle_context(lifecycle_state="data_review"),
+        },
+    ).json()
+    steps = created["plan"]["proposed_steps"]
+    register_step = next(step for step in steps if step["capability_id"] == "quant_data.register_source_reference")
+    preflight_step = next(step for step in steps if step["capability_id"] == "quant_data.run_source_preflight")
+    eda_plan_step = next(step for step in steps if step["capability_id"] == "quant_data.create_eda_plan")
+
+    first_advance = client.post(
+        f"/workflow-runs/{created['run_id']}/advance-until-blocked",
+        json={"advance_intent": "advance_workflow_until_blocked"},
+    )
+    assert first_advance.status_code == 200
+    assert first_advance.json()["advance_status"] == "manual_confirmation_required"
+
+    confirmation = client.post(
+        "/confirmations",
+        json={
+            "run_id": created["run_id"],
+            "step_id": register_step["step_id"],
+            "confirmation_intent": "approve_plan_step",
+        },
+    )
+    assert confirmation.status_code == 200
+
+    preview = client.post(
+        f"/workflow-runs/{created['run_id']}/advance",
+        json={"advance_intent": "advance_workflow_one_step"},
+    )
+    assert preview.status_code == 200
+    assert preview.json()["selected_action"] == "preview_action_request"
+
+    execution = client.post(
+        f"/workflow-runs/{created['run_id']}/advance",
+        json={"advance_intent": "advance_workflow_one_step"},
+    )
+    assert execution.status_code == 200
+    assert execution.json()["selected_action"] == "execute_step"
+    assert app_client.execution_calls[-1]["capability_id"] == "quant_data.register_source_reference"
+
+    source_preflight = client.post(
+        f"/workflow-runs/{created['run_id']}/advance",
+        json={"advance_intent": "advance_workflow_one_step"},
+    )
+    assert source_preflight.status_code == 200
+    assert source_preflight.json()["step_id"] == preflight_step["step_id"]
+    assert source_preflight.json()["selected_action"] == "run_preflight"
+    assert app_client.calls[-1]["capability_id"] == "quant_data.run_source_preflight"
+    assert app_client.calls[-1]["payload"]["action_input"]["source_reference"]["reference_type"] == "source_reference"
+
+    eda_plan_block = client.post(
+        f"/workflow-runs/{created['run_id']}/advance",
+        json={"advance_intent": "advance_workflow_one_step"},
+    )
+    assert eda_plan_block.status_code == 200
+    assert eda_plan_block.json()["advance_status"] == "manual_confirmation_required"
+    assert eda_plan_block.json()["capability_id"] == "quant_data.create_eda_plan"
+
+    eda_plan_confirmation = client.post(
+        "/confirmations",
+        json={
+            "run_id": created["run_id"],
+            "step_id": eda_plan_step["step_id"],
+            "confirmation_intent": "approve_plan_step",
+        },
+    )
+    assert eda_plan_confirmation.status_code == 200
+
+    eda_plan_preview = client.post(
+        f"/workflow-runs/{created['run_id']}/advance",
+        json={"advance_intent": "advance_workflow_one_step"},
+    )
+    assert eda_plan_preview.status_code == 200
+    assert eda_plan_preview.json()["selected_action"] == "preview_action_request"
+    assert (
+        eda_plan_preview.json()["delegated_result"]["result"]["action_request"]["action_input"]["preflight_summary"][
+            "reference_type"
+        ]
+        == "preflight_summary"
+    )
+
+
+def test_documentation_scoped_workflow_hands_documentation_references_forward() -> None:
+    app_client = FakePreflightAppClient()
+    client = TestClient(create_app(runtime_with_preflight_client(app_client)))
+    created = client.post(
+        "/workflow-runs",
+        json={
+            "goal": "Run only Quant Documentation steps 1 through 5.",
+            "workflow_scope": "app_workflow",
+            "source_app": "quant_documentation",
+            "context_summary": _safe_lifecycle_context(lifecycle_state="documentation_review")
+            | {"package_summary": _safe_documentation_package_summary()},
+        },
+    ).json()
+    steps = created["plan"]["proposed_steps"]
+    draft_workspace_step = next(
+        step for step in steps if step["capability_id"] == "quant_documentation.create_draft_workspace"
+    )
+    draft_section_step = next(step for step in steps if step["capability_id"] == "quant_documentation.draft_section")
+    export_step = next(
+        step for step in steps if step["capability_id"] == "quant_documentation.export_markdown_review_package"
+    )
+
+    inspect_preview = client.post(
+        f"/workflow-runs/{created['run_id']}/advance",
+        json={"advance_intent": "advance_workflow_one_step"},
+    )
+    assert inspect_preview.status_code == 200
+    assert inspect_preview.json()["selected_action"] == "preview_action_request"
+    inspect_execution = client.post(
+        f"/workflow-runs/{created['run_id']}/advance",
+        json={"advance_intent": "advance_workflow_one_step"},
+    )
+    assert inspect_execution.status_code == 200
+    assert inspect_execution.json()["selected_action"] == "execute_step"
+
+    draft_workspace_block = client.post(
+        f"/workflow-runs/{created['run_id']}/advance",
+        json={"advance_intent": "advance_workflow_one_step"},
+    )
+    assert draft_workspace_block.status_code == 200
+    assert draft_workspace_block.json()["advance_status"] == "manual_confirmation_required"
+
+    confirmation = client.post(
+        "/confirmations",
+        json={
+            "run_id": created["run_id"],
+            "step_id": draft_workspace_step["step_id"],
+            "confirmation_intent": "approve_plan_step",
+        },
+    )
+    assert confirmation.status_code == 200
+    draft_workspace_preview = client.post(
+        f"/workflow-runs/{created['run_id']}/advance",
+        json={"advance_intent": "advance_workflow_one_step"},
+    )
+    assert draft_workspace_preview.status_code == 200
+    assert draft_workspace_preview.json()["selected_action"] == "preview_action_request"
+    assert (
+        draft_workspace_preview.json()["delegated_result"]["result"]["action_request"]["action_input"][
+            "documentation_package_summary"
+        ]["reference_type"]
+        == "documentation_package_summary"
+    )
+    draft_workspace_execution = client.post(
+        f"/workflow-runs/{created['run_id']}/advance",
+        json={"advance_intent": "advance_workflow_one_step"},
+    )
+    assert draft_workspace_execution.status_code == 200
+    assert draft_workspace_execution.json()["selected_action"] == "execute_step"
+
+    draft_section_block = client.post(
+        f"/workflow-runs/{created['run_id']}/advance",
+        json={"advance_intent": "advance_workflow_one_step"},
+    )
+    assert draft_section_block.status_code == 200
+    assert draft_section_block.json()["advance_status"] == "manual_confirmation_required"
+    assert draft_section_block.json()["capability_id"] == "quant_documentation.draft_section"
+
+    section_confirmation = client.post(
+        "/confirmations",
+        json={
+            "run_id": created["run_id"],
+            "step_id": draft_section_step["step_id"],
+            "confirmation_intent": "approve_plan_step",
+        },
+    )
+    assert section_confirmation.status_code == 200
+    draft_section_preview = client.post(
+        f"/workflow-runs/{created['run_id']}/advance",
+        json={"advance_intent": "advance_workflow_one_step"},
+    )
+    assert draft_section_preview.status_code == 200
+    assert (
+        draft_section_preview.json()["delegated_result"]["result"]["action_request"]["action_input"][
+            "documentation_draft"
+        ]["reference_type"]
+        == "documentation_draft"
+    )
+    draft_section_execution = client.post(
+        f"/workflow-runs/{created['run_id']}/advance",
+        json={"advance_intent": "advance_workflow_one_step"},
+    )
+    assert draft_section_execution.status_code == 200
+
+    claim_review_preview = client.post(
+        f"/workflow-runs/{created['run_id']}/advance",
+        json={"advance_intent": "advance_workflow_one_step"},
+    )
+    assert claim_review_preview.status_code == 200
+    assert (
+        claim_review_preview.json()["delegated_result"]["result"]["action_request"]["action_input"]["draft_section"][
+            "reference_type"
+        ]
+        == "draft_section"
+    )
+    claim_review_execution = client.post(
+        f"/workflow-runs/{created['run_id']}/advance",
+        json={"advance_intent": "advance_workflow_one_step"},
+    )
+    assert claim_review_execution.status_code == 200
+
+    export_block = client.post(
+        f"/workflow-runs/{created['run_id']}/advance",
+        json={"advance_intent": "advance_workflow_one_step"},
+    )
+    assert export_block.status_code == 200
+    assert export_block.json()["advance_status"] == "manual_confirmation_required"
+
+    export_confirmation = client.post(
+        "/confirmations",
+        json={
+            "run_id": created["run_id"],
+            "step_id": export_step["step_id"],
+            "confirmation_intent": "approve_plan_step",
+        },
+    )
+    assert export_confirmation.status_code == 200
+    export_preview = client.post(
+        f"/workflow-runs/{created['run_id']}/advance",
+        json={"advance_intent": "advance_workflow_one_step"},
+    )
+    assert export_preview.status_code == 200
+    assert (
+        export_preview.json()["delegated_result"]["result"]["action_request"]["action_input"]["claim_review_summary"][
+            "reference_type"
+        ]
+        == "claim_review_summary"
+    )
+
+
+def test_data_preflight_blocks_before_source_registration_confirmation() -> None:
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
+    created = client.post(
+        "/workflow-runs",
+        json={
+            "goal": "Run only Quant Data steps 1 through 5.",
+            "workflow_scope": "app_workflow",
+            "source_app": "quant_data",
+            "context_summary": _safe_lifecycle_context(lifecycle_state="data_review"),
+        },
+    ).json()
+    preflight_step = next(
+        step for step in created["plan"]["proposed_steps"] if step["capability_id"] == "quant_data.run_source_preflight"
+    )
+
+    response = client.post(
+        "/preflights",
+        json={"run_id": created["run_id"], "step_id": preflight_step["step_id"]},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["errors"][0]["code"] == "orchestration_step_not_ready"
+
+
+def test_documentation_workflow_blocks_when_required_handoff_reference_is_missing() -> None:
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
+    created = client.post(
+        "/workflow-runs",
+        json={
+            "goal": "Run only Quant Documentation steps 1 through 5.",
+            "workflow_scope": "app_workflow",
+            "source_app": "quant_documentation",
+            "context_summary": _safe_lifecycle_context(lifecycle_state="documentation_review")
+            | {"package_summary": _safe_documentation_package_summary()},
+        },
+    ).json()
+    draft_section_step = next(
+        step for step in created["plan"]["proposed_steps"] if step["capability_id"] == "quant_documentation.draft_section"
+    )
+
+    response = client.post(
+        "/action-requests",
+        json={"run_id": created["run_id"], "step_id": draft_section_step["step_id"]},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["errors"][0]["code"] == "orchestration_step_not_ready"
 
 
 def test_workflow_run_rejects_unknown_capability_set_member() -> None:

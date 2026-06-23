@@ -27,6 +27,7 @@ def default_capabilities() -> list[CapabilityDefinition]:
             risk_tier=RiskTier.draft_only,
             required_fields=["target_summary"],
             confirmation_required=True,
+            execution_supported=True,
         ),
         CapabilityDefinition(
             capability_id="quant_documentation.inspect_package",
@@ -34,6 +35,7 @@ def default_capabilities() -> list[CapabilityDefinition]:
             display_name="Inspect documentation package",
             risk_tier=RiskTier.read_only,
             required_fields=["package_summary"],
+            execution_supported=True,
         ),
         CapabilityDefinition(
             capability_id="quant_documentation.create_draft_workspace",
@@ -42,6 +44,7 @@ def default_capabilities() -> list[CapabilityDefinition]:
             risk_tier=RiskTier.draft_only,
             required_fields=["package_summary"],
             confirmation_required=True,
+            execution_supported=True,
         ),
         CapabilityDefinition(
             capability_id="quant_monitoring.validate_bundle",

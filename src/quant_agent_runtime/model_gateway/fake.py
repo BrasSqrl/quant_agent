@@ -15,6 +15,14 @@ from quant_agent_runtime.models import (
 )
 from quant_agent_runtime.provider_config import internal_provider_status
 
+_BASELINE_PLAN_CAPABILITY_ORDER = [
+    "quant_data.run_source_preflight",
+    "quant_studio.prepare_model_config_draft",
+    "quant_documentation.inspect_package",
+    "quant_documentation.create_draft_workspace",
+    "quant_monitoring.validate_bundle",
+]
+
 
 class FakePlanProvider(ModelProvider):
     def __init__(self, provider_status: ProviderRuntimeStatus | None = None) -> None:
@@ -23,8 +31,9 @@ class FakePlanProvider(ModelProvider):
     def generate_plan(self, request: ProviderPlanRequest) -> ProviderResult:
         steps: list[dict[str, object]] = []
         missing_inputs: list[str] = []
+        capabilities = self._capabilities_for_plan(request.capabilities)
 
-        for index, capability in enumerate(request.capabilities, start=1):
+        for index, capability in enumerate(capabilities, start=1):
             if not capability.enabled or capability.risk_tier == RiskTier.forbidden:
                 continue
             action_input: dict[str, object] = {}
@@ -74,6 +83,15 @@ class FakePlanProvider(ModelProvider):
         }
         metadata = self._provider_metadata_for(request)
         return ProviderResult(raw_output=raw_output, metadata=metadata)
+
+    def _capabilities_for_plan(self, capabilities: list) -> list:
+        by_id = {capability.capability_id: capability for capability in capabilities}
+        if (
+            len(capabilities) > len(_BASELINE_PLAN_CAPABILITY_ORDER)
+            and all(capability_id in by_id for capability_id in _BASELINE_PLAN_CAPABILITY_ORDER)
+        ):
+            return [by_id[capability_id] for capability_id in _BASELINE_PLAN_CAPABILITY_ORDER]
+        return capabilities
 
     def _summarize_goal(self, user_goal: str) -> str:
         return " ".join(user_goal.strip().split())[:240]
