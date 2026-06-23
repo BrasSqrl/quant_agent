@@ -326,16 +326,21 @@ def test_phase3_agent_examples_validate_against_canonical_contracts(
 
 def test_canonical_capability_example_is_loaded_and_mapped() -> None:
     capabilities = QuantSuiteContractLoader(QUANT_SUITE_ROOT).load_agent_capabilities()
+    enabled_capabilities = [item for item in capabilities if item.enabled]
 
-    assert [item.capability_id for item in capabilities] == [
+    assert [item.capability_id for item in enabled_capabilities] == [
         "quant_data.run_source_preflight",
         "quant_studio.prepare_model_config_draft",
         "quant_documentation.inspect_package",
         "quant_documentation.create_draft_workspace",
         "quant_monitoring.validate_bundle",
     ]
-    assert capabilities[1].confirmation_required is True
-    assert capabilities[1].required_fields == ["target_summary"]
+    assert enabled_capabilities[1].confirmation_required is True
+    assert enabled_capabilities[1].required_fields == ["target_summary"]
+    assert any(
+        item.capability_id == "quant_studio.fit_candidate_model" and not item.enabled
+        for item in capabilities
+    )
 
 
 def test_canonical_provider_config_example_is_loaded_and_mapped() -> None:

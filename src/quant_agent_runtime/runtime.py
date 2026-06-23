@@ -14,6 +14,8 @@ from quant_agent_runtime.contracts.internal_test_fixtures import TEMPORARY_AGENT
 from quant_agent_runtime.demo_narrative import DemoNarrativeService
 from quant_agent_runtime.execution import ExecutionService
 from quant_agent_runtime.external_approval import (
+    EXTERNAL_APPROVAL_ADAPTER_SUPPORT_LEVEL,
+    EXTERNAL_APPROVAL_DECISION_REFRESH_SUPPORT_LEVEL,
     EXTERNAL_APPROVAL_DECISION_SUPPORT_LEVEL,
     EXTERNAL_APPROVAL_SUPPORT_LEVEL,
     EXTERNAL_APPROVAL_SUBMISSION_SUPPORT_LEVEL,
@@ -33,6 +35,8 @@ from quant_agent_runtime.ledger import FileBackedLedger
 from quant_agent_runtime.model_gateway import FakePlanProvider, ModelProvider, SharedLlmPlanProvider
 from quant_agent_runtime.models import (
     AgentSupportBundleResult,
+    ExternalApprovalDecisionRefreshRequest,
+    ExternalApprovalDecisionRefreshResult,
     ExternalApprovalDecisionImportRequest,
     ExternalApprovalDecisionImportResult,
     ExternalApprovalPreviewRequest,
@@ -63,6 +67,11 @@ from quant_agent_runtime.sample_autopilot import SampleAutopilotPreviewService, 
 from quant_agent_runtime.sample_reset import SampleResetService
 from quant_agent_runtime.user_workflow import UserWorkflowService
 from quant_agent_runtime.validation.errors import RuntimeValidationError
+from quant_agent_runtime.workflow_runner import (
+    WORKFLOW_RUN_SUPPORT_LEVEL,
+    WORKFLOW_TEMPLATE_SUPPORT_LEVEL,
+    WorkflowRunService,
+)
 
 
 SUPPORT_BUNDLE_CONTRACT_SCHEMA = "agent_support_bundle.v1.schema.json"
@@ -93,6 +102,7 @@ class RuntimeContainer:
     governance: GovernanceService | None = None
     external_approval: ExternalApprovalService | None = None
     external_approval_submission: ExternalApprovalSubmissionService | None = None
+    workflow_runner: WorkflowRunService | None = None
 
     def support_bundle(self, run_id: str) -> AgentSupportBundleResult:
         manifest = self.manifest()
@@ -220,6 +230,23 @@ class RuntimeContainer:
             orchestration=orchestration,
         )
 
+    def refresh_external_approval_decision(
+        self,
+        request: ExternalApprovalDecisionRefreshRequest,
+    ) -> ExternalApprovalDecisionRefreshResult:
+        run_status = self.run_status.get_run_status(request.run_id)
+        orchestration = self.orchestration.get_run_orchestration(request.run_id)
+        service = self.external_approval or ExternalApprovalService(
+            ledger=self.planner.ledger,
+            contract_loader=self.contract_loader,
+            governance=self.governance,
+        )
+        return service.refresh_decision(
+            request,
+            run_status=run_status,
+            orchestration=orchestration,
+        )
+
     def submit_external_approval_request(
         self,
         request: ExternalApprovalSubmissionRequest,
@@ -244,6 +271,23 @@ class RuntimeContainer:
             governance=self.governance,
         )
         return service.list_submissions(run_id)
+
+    def workflow_service(self) -> WorkflowRunService:
+        if self.workflow_runner is None:
+            self.workflow_runner = WorkflowRunService(
+                planner=self.planner,
+                ledger=self.planner.ledger,
+                contract_loader=self.contract_loader,
+                run_status=self.run_status,
+                orchestration=self.orchestration,
+                preflight=self.preflight,
+                confirmation=self.confirmation,
+                action_request=self.action_request,
+                execution=self.execution,
+                retry=self.retry,
+                governance=self.governance,
+            )
+        return self.workflow_runner
 
     def manifest(self) -> RuntimeManifest:
         contract_result = self.contract_loader.load_agent_contracts()
@@ -308,6 +352,8 @@ class RuntimeContainer:
             external_approval_enforcement_support_level=EXTERNAL_APPROVAL_ENFORCEMENT_SUPPORT_LEVEL,
             external_approval_submission_support_level=EXTERNAL_APPROVAL_SUBMISSION_SUPPORT_LEVEL,
             external_approval_submission_status_support_level=EXTERNAL_APPROVAL_SUBMISSION_STATUS_SUPPORT_LEVEL,
+            external_approval_decision_refresh_support_level=EXTERNAL_APPROVAL_DECISION_REFRESH_SUPPORT_LEVEL,
+            external_approval_adapter_support_level=EXTERNAL_APPROVAL_ADAPTER_SUPPORT_LEVEL,
             external_approval_submission_adapter=external_approval_submission_adapter_status(),
             recovery_support_level="manual_pause_resume_only",
             orchestration_support_level="manual_guided_existing_steps_only",
@@ -324,6 +370,14 @@ class RuntimeContainer:
             release_evidence_support_level=RELEASE_EVIDENCE_SUPPORT_LEVEL,
             user_workflow_support_level="manual_user_owned_consent_gate_only",
             user_plan_approval_support_level="manual_active_plan_approval_only",
+            workflow_run_support_level=WORKFLOW_RUN_SUPPORT_LEVEL,
+            workflow_template_support_level=WORKFLOW_TEMPLATE_SUPPORT_LEVEL,
+            supported_workflow_scopes=[
+                "full_lifecycle",
+                "app_workflow",
+                "stage_range",
+                "capability_set",
+            ],
             plan_only_support_level="supported",
             execution_support_level="single_step_review_draft_actions_only",
             redaction_support_level="deterministic_context_redaction",
@@ -448,6 +502,19 @@ def build_runtime() -> RuntimeContainer:
         contract_loader=contract_loader,
         governance=governance,
     )
+    workflow_runner = WorkflowRunService(
+        planner=planner,
+        ledger=ledger,
+        contract_loader=contract_loader,
+        run_status=run_status,
+        orchestration=orchestration,
+        preflight=preflight,
+        confirmation=confirmation,
+        action_request=action_request,
+        execution=execution,
+        retry=retry,
+        governance=governance,
+    )
     return RuntimeContainer(
         planner=planner,
         preflight=preflight,
@@ -471,6 +538,7 @@ def build_runtime() -> RuntimeContainer:
         governance=governance,
         external_approval=external_approval,
         external_approval_submission=external_approval_submission,
+        workflow_runner=workflow_runner,
     )
 
 

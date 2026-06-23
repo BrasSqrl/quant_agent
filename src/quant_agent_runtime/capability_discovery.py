@@ -173,6 +173,8 @@ class CapabilityDiscoveryService:
             for canonical in capabilities:
                 if canonical.app_id != app_id:
                     continue
+                if not canonical.enabled:
+                    continue
                 if canonical.capability_id in discovered_for_app:
                     continue
                 if canonical.preflight_required:

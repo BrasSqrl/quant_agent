@@ -235,6 +235,89 @@ class PlanResult(StrictModel):
     ledger_recorded: bool
 
 
+WorkflowScope = Literal["full_lifecycle", "app_workflow", "stage_range", "capability_set"]
+
+
+class WorkflowRunRequest(StrictModel):
+    goal: str = Field(min_length=1)
+    workflow_scope: WorkflowScope
+    source_app: str | None = None
+    start_stage: str | None = None
+    end_stage: str | None = None
+    requested_capability_ids: list[str] = Field(default_factory=list)
+    context_summary: dict[str, Any] = Field(default_factory=dict)
+    policy: PolicySettings = Field(default_factory=PolicySettings)
+
+
+class WorkflowRunScopeSummary(StrictModel):
+    workflow_scope: WorkflowScope
+    source_app: str | None = None
+    start_stage: str | None = None
+    end_stage: str | None = None
+    requested_capability_ids: list[str] = Field(default_factory=list)
+    selected_template_ids: list[str] = Field(default_factory=list)
+    selected_capability_ids: list[str] = Field(default_factory=list)
+    omitted_capability_ids: list[str] = Field(default_factory=list)
+    workflow_gaps: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class WorkflowRunResult(StrictModel):
+    run_id: str
+    workflow_scope: WorkflowRunScopeSummary
+    plan: StructuredPlan
+    run_state: RunState
+    orchestration: RunOrchestrationResult
+    provider_metadata: ProviderMetadata
+    redaction_summary: RedactionSummary
+    context_preview: ContextPreview
+    validation: PlanValidationResult
+    ledger_recorded: bool
+
+
+class WorkflowRunStatusResult(StrictModel):
+    run_id: str
+    workflow_scope: WorkflowRunScopeSummary | None = None
+    run_status: RunStatusResult
+    orchestration: RunOrchestrationResult
+    validation: PlanValidationResult
+    ledger_recorded: Literal[False] = False
+
+
+class WorkflowAdvanceRequest(StrictModel):
+    advance_intent: Literal["advance_workflow_one_step"] = "advance_workflow_one_step"
+
+
+class WorkflowAdvanceUntilBlockedRequest(StrictModel):
+    advance_intent: Literal["advance_workflow_until_blocked"] = "advance_workflow_until_blocked"
+    max_steps: int = Field(default=10, ge=1, le=25)
+
+
+class WorkflowAdvanceResult(StrictModel):
+    run_id: str
+    workflow_scope: WorkflowRunScopeSummary | None = None
+    step_id: str | None = None
+    capability_id: str | None = None
+    selected_action: str | None = None
+    advance_status: str
+    delegated_result: dict[str, Any] | None = None
+    run_state: RunState
+    orchestration: RunOrchestrationResult
+    validation: PlanValidationResult
+    ledger_recorded: bool
+
+
+class WorkflowAdvanceUntilBlockedResult(StrictModel):
+    run_id: str
+    workflow_scope: WorkflowRunScopeSummary | None = None
+    advance_status: str
+    completed_action_count: int = 0
+    last_result: WorkflowAdvanceResult | None = None
+    run_state: RunState
+    orchestration: RunOrchestrationResult
+    validation: PlanValidationResult
+    ledger_recorded: bool
+
+
 class PreflightRequest(StrictModel):
     run_id: str = Field(min_length=1)
     step_id: str = Field(min_length=1)
@@ -992,6 +1075,25 @@ class ExternalApprovalDecisionImportResult(StrictModel):
     ledger_recorded: bool
 
 
+class ExternalApprovalDecisionRefreshRequest(StrictModel):
+    run_id: str = Field(min_length=1)
+    decision_refresh_intent: Literal["refresh_external_approval_decision"]
+    approval_request_id: str = Field(min_length=1)
+
+
+class ExternalApprovalDecisionRefreshResult(StrictModel):
+    run_id: str
+    step_id: str | None = None
+    approval_request_id: str
+    decision_refresh: dict[str, Any]
+    approval_decision: dict[str, Any] | None = None
+    external_approval_summary: dict[str, Any]
+    run_status: RunStatusResult
+    orchestration: RunOrchestrationResult
+    validation: PlanValidationResult
+    ledger_recorded: bool
+
+
 class ExternalApprovalSubmissionRequest(StrictModel):
     run_id: str = Field(min_length=1)
     submission_intent: Literal["submit_external_approval_request"]
@@ -1017,10 +1119,13 @@ class ExternalApprovalSubmissionSummary(StrictModel):
     capability_id: str | None = None
     adapter_mode: str
     submission_status: str
+    adapter_delivery_status: str | None = None
+    adapter_delivery_summary: dict[str, Any] = Field(default_factory=dict)
     outbox_status: Literal["present", "missing", "disabled", "not_checked"]
     submitted_at_utc: str | None = None
     submission_reference: dict[str, Any] = Field(default_factory=dict)
     latest_matching_decision: dict[str, Any] | None = None
+    latest_decision_refresh: dict[str, Any] | None = None
     validation: PlanValidationResult
     ledger_integrity_summary: LedgerIntegritySummary | None = None
 
@@ -1090,6 +1195,9 @@ class RuntimeManifest(StrictModel):
     revalidation_support_level: str = "not_available"
     user_workflow_support_level: str = "not_available"
     user_plan_approval_support_level: str = "not_available"
+    workflow_run_support_level: str = "not_available"
+    workflow_template_support_level: str = "not_available"
+    supported_workflow_scopes: list[str] = Field(default_factory=list)
     autopilot_support_level: str = "not_available"
     sample_reset_support_level: str = "not_available"
     demo_narrative_support_level: str = "not_available"
@@ -1098,6 +1206,8 @@ class RuntimeManifest(StrictModel):
     external_approval_enforcement_support_level: str = "not_available"
     external_approval_submission_support_level: str = "not_available"
     external_approval_submission_status_support_level: str = "not_available"
+    external_approval_decision_refresh_support_level: str = "not_available"
+    external_approval_adapter_support_level: str = "not_available"
     external_approval_submission_adapter: dict[str, Any] | None = None
     governance_support_level: str = "not_available"
     separation_of_duties_support_level: str = "not_available"

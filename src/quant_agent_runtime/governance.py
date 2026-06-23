@@ -29,6 +29,7 @@ RELEASE_EVIDENCE_SUPPORT_LEVEL = "contract_policy_redaction_checks"
 READ_ROUTES = [
     "GET /health",
     "GET /runtime/manifest",
+    "GET /workflow-runs/{run_id}",
     "GET /runs",
     "GET /runs/{run_id}",
     "GET /runs/{run_id}/orchestration",
@@ -40,6 +41,9 @@ READ_ROUTES = [
 
 MUTATING_ROUTES = [
     "POST /plans",
+    "POST /workflow-runs",
+    "POST /workflow-runs/{run_id}/advance",
+    "POST /workflow-runs/{run_id}/advance-until-blocked",
     "POST /preflights",
     "POST /confirmations",
     "POST /action-requests",
@@ -62,6 +66,7 @@ MUTATING_ROUTES = [
     "POST /external-approval-requests",
     "POST /external-approval-submissions",
     "POST /external-approval-decisions",
+    "POST /external-approval-decision-refreshes",
 ]
 
 ALL_ROUTES = [*READ_ROUTES, *MUTATING_ROUTES]

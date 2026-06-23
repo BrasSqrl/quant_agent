@@ -16,6 +16,8 @@ from quant_agent_runtime.models import (
     DemoNarrativeResult,
     ExecutionRequest,
     ExecutionResult,
+    ExternalApprovalDecisionRefreshRequest,
+    ExternalApprovalDecisionRefreshResult,
     ExternalApprovalDecisionImportRequest,
     ExternalApprovalDecisionImportResult,
     ExternalApprovalPreviewRequest,
@@ -60,6 +62,13 @@ from quant_agent_runtime.models import (
     UserWorkflowConsentResult,
     UserWorkflowReadinessRequest,
     UserWorkflowReadinessResult,
+    WorkflowAdvanceRequest,
+    WorkflowAdvanceResult,
+    WorkflowAdvanceUntilBlockedRequest,
+    WorkflowAdvanceUntilBlockedResult,
+    WorkflowRunRequest,
+    WorkflowRunResult,
+    WorkflowRunStatusResult,
 )
 from quant_agent_runtime.governance import GovernanceService
 from quant_agent_runtime.runtime import RuntimeContainer, build_runtime
@@ -136,6 +145,66 @@ def create_app(runtime: RuntimeContainer | None = None) -> FastAPI:
             return runtime_container.planner.create_plan(request)
         except RuntimeValidationError as exc:
             raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
+
+    @api.post("/workflow-runs", response_model=WorkflowRunResult)
+    def create_workflow_run(request: WorkflowRunRequest) -> WorkflowRunResult:
+        try:
+            require_governance("POST /workflow-runs")
+            return runtime_container.workflow_service().create_workflow_run(request)
+        except RuntimeValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
+
+    @api.get("/workflow-runs/{run_id}", response_model=WorkflowRunStatusResult)
+    def get_workflow_run(run_id: str) -> WorkflowRunStatusResult:
+        try:
+            require_governance("GET /workflow-runs/{run_id}", run_id=run_id)
+            return runtime_container.workflow_service().get_workflow_run(run_id)
+        except RuntimeValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
+
+    @api.post("/workflow-runs/{run_id}/advance", response_model=WorkflowAdvanceResult)
+    def advance_workflow_run(
+        run_id: str,
+        request: WorkflowAdvanceRequest = WorkflowAdvanceRequest(),
+    ) -> WorkflowAdvanceResult:
+        try:
+            require_governance("POST /workflow-runs/{run_id}/advance", run_id=run_id)
+            return runtime_container.workflow_service().advance_one(run_id, request)
+        except RuntimeValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
+        except AppClientError as exc:
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail={
+                    "code": "app_unavailable" if exc.status_code == 503 else "app_action_error",
+                    "message": str(exc),
+                },
+            ) from exc
+
+    @api.post(
+        "/workflow-runs/{run_id}/advance-until-blocked",
+        response_model=WorkflowAdvanceUntilBlockedResult,
+    )
+    def advance_workflow_run_until_blocked(
+        run_id: str,
+        request: WorkflowAdvanceUntilBlockedRequest = WorkflowAdvanceUntilBlockedRequest(),
+    ) -> WorkflowAdvanceUntilBlockedResult:
+        try:
+            require_governance(
+                "POST /workflow-runs/{run_id}/advance-until-blocked",
+                run_id=run_id,
+            )
+            return runtime_container.workflow_service().advance_until_blocked(run_id, request)
+        except RuntimeValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
+        except AppClientError as exc:
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail={
+                    "code": "app_unavailable" if exc.status_code == 503 else "app_action_error",
+                    "message": str(exc),
+                },
+            ) from exc
 
     @api.post("/preflights", response_model=PreflightResult)
     def create_preflight(request: PreflightRequest) -> PreflightResult:
@@ -412,6 +481,19 @@ def create_app(runtime: RuntimeContainer | None = None) -> FastAPI:
                 capability_id=capability_id if isinstance(capability_id, str) else None,
             )
             return runtime_container.import_external_approval_decision(request)
+        except RuntimeValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
+
+    @api.post("/external-approval-decision-refreshes", response_model=ExternalApprovalDecisionRefreshResult)
+    def refresh_external_approval_decision(
+        request: ExternalApprovalDecisionRefreshRequest,
+    ) -> ExternalApprovalDecisionRefreshResult:
+        try:
+            require_governance(
+                "POST /external-approval-decision-refreshes",
+                run_id=request.run_id,
+            )
+            return runtime_container.refresh_external_approval_decision(request)
         except RuntimeValidationError as exc:
             raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
 

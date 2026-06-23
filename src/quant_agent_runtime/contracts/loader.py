@@ -91,6 +91,21 @@ class QuantSuiteContractLoader:
             )
         return capabilities
 
+    def load_agent_workflow_templates(self) -> dict[str, Any]:
+        template_path = self._root / "contracts" / "agent_workflow_template.v1.example.json"
+        if not template_path.is_file():
+            return {}
+
+        try:
+            with template_path.open("r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, JSONDecodeError):
+            return {}
+
+        if not isinstance(payload, dict):
+            return {}
+        return payload
+
     def load_agent_provider_status(self) -> ProviderRuntimeStatus:
         config_path = self._root / "contracts" / "agent_provider_config.v1.example.json"
         if not config_path.is_file():
