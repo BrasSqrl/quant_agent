@@ -59,7 +59,14 @@ class ActionRequestPreviewService:
         if plan_state == "cancelled":
             raise _rejected(
                 "cancelled_run_action_request",
-                "The recorded run is cancelled and cannot produce an action request.",
+                "The recorded run has been cancelled and cannot produce an action request.",
+                step_id=request.step_id,
+                capability_id=capability_id or None,
+            )
+        if plan_state == "sample_reset":
+            raise _rejected(
+                "terminal_run_action_request",
+                "The recorded run is terminal and cannot produce an action request.",
                 step_id=request.step_id,
                 capability_id=capability_id or None,
             )

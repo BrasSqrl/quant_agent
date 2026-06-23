@@ -14,6 +14,8 @@ from quant_agent_runtime.models import (
 SUPPORTED_PROVIDER_MODES = {
     ProviderMode.fake_provider,
     ProviderMode.disabled_or_local_fallback,
+    ProviderMode.openai,
+    ProviderMode.ollama,
 }
 
 
@@ -24,7 +26,7 @@ class PolicyEngine:
             issues.append(
                 ValidationIssue(
                     code="provider_mode_not_supported",
-                    message="Only fake-provider and disabled/local fallback modes are supported.",
+                    message="Only fake-provider, disabled/local fallback, OpenAI, and Ollama planner modes are supported.",
                 )
             )
         if not policy.plan_only:

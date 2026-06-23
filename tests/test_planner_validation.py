@@ -191,4 +191,59 @@ def test_unsafe_plan_payload_is_rejected() -> None:
     with pytest.raises(RuntimeValidationError) as exc_info:
         planner.create_plan(request_with_default_capability())
 
-    assert "unsafe_raw_value" in {issue.code for issue in exc_info.value.validation.errors}
+    assert "unsafe_provider_plan_payload" in {
+        issue.code for issue in exc_info.value.validation.errors
+    }
+
+
+@pytest.mark.parametrize(
+    "raw_output",
+    [
+        output_with_step(valid_step(title="Inspect http://127.0.0.1/private")),
+        {
+            "user_goal_summary": "safe goal",
+            "assumptions": ["Review C:\\Users\\me\\private.csv"],
+            "missing_inputs": [],
+            "steps": [valid_step()],
+        },
+        {
+            "user_goal_summary": "safe goal",
+            "assumptions": [],
+            "missing_inputs": ["Read s3://private-bucket/raw.csv"],
+            "steps": [valid_step()],
+        },
+        output_with_step(valid_step(validation_checks=["run powershell -encodedCommand"])),
+    ],
+)
+def test_unsafe_provider_plan_fields_are_rejected(raw_output: dict[str, object]) -> None:
+    planner, _ = runtime_for(raw_output)
+
+    with pytest.raises(RuntimeValidationError) as exc_info:
+        planner.create_plan(request_with_default_capability())
+
+    assert "unsafe_provider_plan_payload" in {
+        issue.code for issue in exc_info.value.validation.errors
+    }
+
+
+def test_preflight_requirement_mismatch_is_rejected() -> None:
+    step = valid_step(
+        capability_id="quant_data.run_source_preflight",
+        app_id="quant_data",
+        risk_tier="workflow_preflight",
+        action_input={"source_summary": "safe source summary"},
+        preflight_required=False,
+    )
+    planner, _ = runtime_for(output_with_step(step))
+
+    with pytest.raises(RuntimeValidationError) as exc_info:
+        planner.create_plan(
+            PlanRequest(
+                user_goal="Run source preflight.",
+                context_summary={"source_summary": "Development sample exists."},
+            )
+        )
+
+    assert "preflight_requirement_mismatch" in {
+        issue.code for issue in exc_info.value.validation.errors
+    }

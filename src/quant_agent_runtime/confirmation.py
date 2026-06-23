@@ -63,7 +63,14 @@ class ConfirmationService:
         if plan_state == "cancelled":
             raise _rejected(
                 "cancelled_run_confirmation",
-                "The recorded run is cancelled and cannot be confirmed.",
+                "The recorded run has been cancelled and cannot be confirmed.",
+                step_id=request.step_id,
+                capability_id=str(step.get("capability_id") or "") or None,
+            )
+        if plan_state == "sample_reset":
+            raise _rejected(
+                "terminal_run_confirmation",
+                "The recorded run is terminal and cannot be confirmed.",
                 step_id=request.step_id,
                 capability_id=str(step.get("capability_id") or "") or None,
             )

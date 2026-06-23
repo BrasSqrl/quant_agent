@@ -49,6 +49,10 @@ UNSAFE_VALUE_PATTERNS = [
     re.compile(r"\b[A-Za-z]:[\\/][^\s]+"),
     re.compile(r"\bs3://[^\s]+", re.IGNORECASE),
     re.compile(r"\bhttps?://[^\s]+", re.IGNORECASE),
+    re.compile(
+        r"\b(?:rm\s+-rf|del\s+/[sq]|powershell\s+-|cmd\.exe|bash\s+-c|sh\s+-c|curl\s+|Invoke-WebRequest|Start-Process)\b",
+        re.IGNORECASE,
+    ),
 ]
 
 

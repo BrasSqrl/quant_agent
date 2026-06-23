@@ -113,6 +113,21 @@ class InMemoryLedger:
             ),
         )
 
+    def append_sample_reset_event(self, run_id: str, record: dict[str, Any]) -> LedgerEntry:
+        return self._update_entry(
+            run_id,
+            lambda entry: entry.model_copy(
+                update={
+                    "recovery_events": [
+                        *entry.recovery_events,
+                        record,
+                    ],
+                    "final_status": "sample_reset",
+                },
+                deep=True,
+            ),
+        )
+
     def append_plan_revision_activation(
         self,
         run_id: str,

@@ -18,6 +18,11 @@ class PlanValidator:
     ) -> PlanValidationResult:
         errors: list[ValidationIssue] = []
         errors.extend(self._policy_engine.validate_settings(policy))
+        for issue in find_unsafe_payload_issues(
+            provider_plan.model_dump(mode="json"),
+            root="provider_plan",
+        ):
+            errors.append(issue.model_copy(update={"code": "unsafe_provider_plan_payload"}))
 
         for step in provider_plan.steps:
             capability = registry.get(step.capability_id)
@@ -59,6 +64,15 @@ class PlanValidator:
                         capability_id=step.capability_id,
                     )
                 )
+            if step.preflight_required != capability.preflight_required:
+                errors.append(
+                    ValidationIssue(
+                        code="preflight_requirement_mismatch",
+                        message="The step preflight gate does not match the capability registry.",
+                        step_id=step.step_id,
+                        capability_id=step.capability_id,
+                    )
+                )
 
             missing_fields = [
                 field for field in capability.required_fields if field not in step.action_input
@@ -76,19 +90,5 @@ class PlanValidator:
             errors.extend(
                 self._policy_engine.validate_step(step=step, capability=capability, policy=policy)
             )
-            unsafe_issues = find_unsafe_payload_issues(
-                step.action_input,
-                root=f"steps.{step.step_id}.action_input",
-            )
-            for issue in unsafe_issues:
-                errors.append(
-                    issue.model_copy(
-                        update={
-                            "step_id": step.step_id,
-                            "capability_id": step.capability_id,
-                        }
-                    )
-                )
-
         status = "rejected" if errors else "valid"
         return PlanValidationResult(status=status, errors=errors)

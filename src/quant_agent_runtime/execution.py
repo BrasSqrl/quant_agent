@@ -61,7 +61,14 @@ class ExecutionService:
         if run_state == "cancelled":
             raise _rejected(
                 "cancelled_run_execution",
-                "The recorded run is cancelled and cannot execute.",
+                "The recorded run has been cancelled and cannot execute.",
+                step_id=request.step_id,
+                capability_id=capability_id or None,
+            )
+        if run_state == "sample_reset":
+            raise _rejected(
+                "terminal_run_execution",
+                "The recorded run is terminal and cannot execute.",
                 step_id=request.step_id,
                 capability_id=capability_id or None,
             )
@@ -209,7 +216,14 @@ class ExecutionService:
         if plan_state == "cancelled":
             raise _rejected(
                 "cancelled_run_execution",
-                "The recorded run is cancelled and cannot execute.",
+                "The recorded run has been cancelled and cannot execute.",
+                step_id=step_id,
+                capability_id=capability_id or None,
+            )
+        if plan_state == "sample_reset":
+            raise _rejected(
+                "terminal_run_execution",
+                "The recorded run is terminal and cannot execute.",
                 step_id=step_id,
                 capability_id=capability_id or None,
             )

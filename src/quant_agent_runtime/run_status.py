@@ -30,7 +30,7 @@ from quant_agent_runtime.run_state import run_state_for_entry
 from quant_agent_runtime.validation.errors import RuntimeValidationError
 
 
-_TERMINAL_RUN_STATES = {"completed", "completed_with_warnings", "failed_terminal"}
+_TERMINAL_RUN_STATES = {"completed", "completed_with_warnings", "failed_terminal", "sample_reset"}
 _TERMINAL_OR_CANCELLED_RUN_STATES = {*_TERMINAL_RUN_STATES, "cancelled"}
 
 

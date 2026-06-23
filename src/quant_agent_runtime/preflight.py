@@ -52,7 +52,13 @@ class PreflightService:
         if plan_state == "cancelled":
             raise _rejected(
                 "cancelled_run_preflight",
-                "The recorded run is cancelled and cannot request preflight.",
+                "The recorded run has been cancelled and cannot request preflight.",
+                step_id=request.step_id,
+            )
+        if plan_state == "sample_reset":
+            raise _rejected(
+                "terminal_run_preflight",
+                "The recorded run is terminal and cannot request preflight.",
                 step_id=request.step_id,
             )
         if plan_state == "paused":

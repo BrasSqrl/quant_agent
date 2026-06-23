@@ -27,7 +27,8 @@ from quant_agent_runtime.revalidation import RunRevalidationService
 from quant_agent_runtime.retry import RetryService
 from quant_agent_runtime.runtime import RuntimeContainer
 from quant_agent_runtime.run_status import RunStatusService
-from quant_agent_runtime.sample_autopilot import SampleAutopilotPreviewService
+from quant_agent_runtime.sample_autopilot import SampleAutopilotPreviewService, SampleAutopilotStepService
+from quant_agent_runtime.sample_reset import SampleResetService
 
 
 AGENT_ROOT = Path(__file__).resolve().parents[1]
@@ -78,20 +79,22 @@ def runtime_with_canonical_capabilities() -> RuntimeContainer:
         app_client=app_client,
         capability_discovery=discovery,
     )
+    preflight = PreflightService(
+        ledger=ledger,
+        contract_loader=loader,
+        app_client=app_client,
+        capability_discovery=discovery,
+    )
+    action_request = ActionRequestPreviewService(ledger=ledger, contract_loader=loader)
     return RuntimeContainer(
         planner=PlannerService(
             provider=FakePlanProvider(),
             ledger=ledger,
             default_capabilities=capabilities or None,
         ),
-        preflight=PreflightService(
-            ledger=ledger,
-            contract_loader=loader,
-            app_client=app_client,
-            capability_discovery=discovery,
-        ),
+        preflight=preflight,
         confirmation=ConfirmationService(ledger=ledger),
-        action_request=ActionRequestPreviewService(ledger=ledger, contract_loader=loader),
+        action_request=action_request,
         execution=execution,
         retry=RetryService(ledger=ledger, execution=execution, app_client=app_client),
         run_status=RunStatusService(ledger=ledger),
@@ -109,6 +112,17 @@ def runtime_with_canonical_capabilities() -> RuntimeContainer:
         revalidation=RunRevalidationService(ledger=ledger),
         sample_autopilot=SampleAutopilotPreviewService(
             ledger=ledger,
+            sample_workspace_root=QUANT_SUITE_ROOT / "fixtures" / "sample_workspaces",
+        ),
+        sample_autopilot_step=SampleAutopilotStepService(
+            ledger=ledger,
+            preflight=preflight,
+            action_request=action_request,
+            execution=execution,
+        ),
+        sample_reset=SampleResetService(
+            ledger=ledger,
+            app_client=app_client,
             sample_workspace_root=QUANT_SUITE_ROOT / "fixtures" / "sample_workspaces",
         ),
         contract_loader=loader,
@@ -191,6 +205,14 @@ class FakePreflightAppClient:
         payload: dict[str, Any],
     ) -> dict[str, Any]:
         return {}
+
+    def reset_sample_workspaces(self) -> dict[str, Any]:
+        return {
+            "status": "reset",
+            "deleted_lifecycle_ids": ["sample_credit_pd_scorecard_panel"],
+            "warnings": [],
+            "lifecycle_response": {"manifests": []},
+        }
 
 
 def load_lifecycle_fixture() -> dict[str, object]:

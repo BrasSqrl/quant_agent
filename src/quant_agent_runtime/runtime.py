@@ -10,7 +10,7 @@ from quant_agent_runtime.contracts import QuantSuiteContractLoader
 from quant_agent_runtime.contracts.internal_test_fixtures import TEMPORARY_AGENT_CONTRACT_FIXTURES
 from quant_agent_runtime.execution import ExecutionService
 from quant_agent_runtime.ledger import FileBackedLedger
-from quant_agent_runtime.model_gateway import FakePlanProvider
+from quant_agent_runtime.model_gateway import FakePlanProvider, ModelProvider, SharedLlmPlanProvider
 from quant_agent_runtime.models import ProviderMode, ProviderRuntimeStatus, RiskTier, RuntimeManifest
 from quant_agent_runtime.orchestration import OrchestrationService
 from quant_agent_runtime.app_clients import LocalAgentAppClient
@@ -19,10 +19,12 @@ from quant_agent_runtime.plan_revision import PlanRevisionService
 from quant_agent_runtime.plan_revision_activation import PlanRevisionActivationService
 from quant_agent_runtime.planner import PlannerService
 from quant_agent_runtime.preflight import PreflightService
+from quant_agent_runtime.provider_config import runtime_provider_status
 from quant_agent_runtime.revalidation import RunRevalidationService
 from quant_agent_runtime.retry import RetryService
 from quant_agent_runtime.run_status import RunStatusService
-from quant_agent_runtime.sample_autopilot import SampleAutopilotPreviewService
+from quant_agent_runtime.sample_autopilot import SampleAutopilotPreviewService, SampleAutopilotStepService
+from quant_agent_runtime.sample_reset import SampleResetService
 
 
 @dataclass
@@ -39,6 +41,8 @@ class RuntimeContainer:
     plan_revision_activation: PlanRevisionActivationService
     revalidation: RunRevalidationService
     sample_autopilot: SampleAutopilotPreviewService
+    sample_autopilot_step: SampleAutopilotStepService
+    sample_reset: SampleResetService
     contract_loader: QuantSuiteContractLoader
     capability_discovery: CapabilityDiscoveryService
     provider_status: ProviderRuntimeStatus | None = None
@@ -81,10 +85,15 @@ class RuntimeContainer:
                 "POST /plan-revision-activations",
                 "POST /run-revalidations",
                 "POST /autopilot-previews",
+                "POST /autopilot-steps",
+                "POST /sample-reset-previews",
+                "POST /sample-resets",
             ],
             supported_provider_modes=[
                 ProviderMode.fake_provider,
                 ProviderMode.disabled_or_local_fallback,
+                ProviderMode.openai,
+                ProviderMode.ollama,
             ],
             supported_model_roles=["planner"],
             supported_risk_tiers=[
@@ -114,7 +123,8 @@ class RuntimeContainer:
             plan_revision_support_level="manual_preview_only",
             plan_revision_activation_support_level="manual_child_run_only",
             revalidation_support_level="manual_context_check_only",
-            autopilot_support_level="sample_owned_dry_run_preview_only",
+            autopilot_support_level="sample_owned_one_step_manual_advance",
+            sample_reset_support_level="sample_owned_studio_orchestrated_only",
             plan_only_support_level="supported",
             execution_support_level="single_step_review_draft_actions_only",
             redaction_support_level="deterministic_context_redaction",
@@ -135,7 +145,7 @@ class RuntimeContainer:
             safety_boundaries=[
                 "single_step_review_draft_execution_only",
                 "no_generic_execution",
-                "no_real_provider",
+                "model_provider_planning_only",
                 "server_side_provider_boundary",
                 "app_owned_preflight_only",
                 "confirmation_required_before_execution",
@@ -155,9 +165,12 @@ def build_runtime() -> RuntimeContainer:
     contract_loader = QuantSuiteContractLoader()
     ledger = FileBackedLedger(validate_contract=contract_loader.validate_agent_contract_payload)
     canonical_capabilities = contract_loader.load_agent_capabilities()
-    provider_status = contract_loader.load_agent_provider_status()
+    provider_status = runtime_provider_status(
+        base_status=contract_loader.load_agent_provider_status(),
+    )
+    model_provider = _planning_provider(provider_status)
     planner = PlannerService(
-        provider=FakePlanProvider(provider_status=provider_status),
+        provider=model_provider,
         ledger=ledger,
         default_capabilities=canonical_capabilities or None,
     )
@@ -188,7 +201,7 @@ def build_runtime() -> RuntimeContainer:
     run_status = RunStatusService(ledger=ledger, capability_discovery=capability_discovery)
     orchestration = OrchestrationService(ledger=ledger)
     plan_revision = PlanRevisionService(
-        provider=FakePlanProvider(provider_status=provider_status),
+        provider=model_provider,
         ledger=ledger,
         contract_loader=contract_loader,
         default_capabilities=canonical_capabilities or None,
@@ -199,6 +212,16 @@ def build_runtime() -> RuntimeContainer:
     )
     revalidation = RunRevalidationService(ledger=ledger)
     sample_autopilot = SampleAutopilotPreviewService(ledger=ledger)
+    sample_autopilot_step = SampleAutopilotStepService(
+        ledger=ledger,
+        preflight=preflight,
+        action_request=action_request,
+        execution=execution,
+    )
+    sample_reset = SampleResetService(
+        ledger=ledger,
+        app_client=app_client,
+    )
     return RuntimeContainer(
         planner=planner,
         preflight=preflight,
@@ -212,7 +235,15 @@ def build_runtime() -> RuntimeContainer:
         plan_revision_activation=plan_revision_activation,
         revalidation=revalidation,
         sample_autopilot=sample_autopilot,
+        sample_autopilot_step=sample_autopilot_step,
+        sample_reset=sample_reset,
         contract_loader=contract_loader,
         capability_discovery=capability_discovery,
         provider_status=provider_status,
     )
+
+
+def _planning_provider(provider_status: ProviderRuntimeStatus) -> ModelProvider:
+    if provider_status.effective_provider_mode in {ProviderMode.openai, ProviderMode.ollama}:
+        return SharedLlmPlanProvider(provider_status=provider_status)
+    return FakePlanProvider(provider_status=provider_status)

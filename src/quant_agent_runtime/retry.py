@@ -73,10 +73,10 @@ class RetryService:
             )
 
         run_state = run_state_for_entry(entry)
-        if run_state == "cancelled":
+        if run_state in {"cancelled", "sample_reset"}:
             raise _rejected(
-                "cancelled_run_retry",
-                "The recorded run is cancelled and cannot retry failed steps.",
+                "terminal_run_retry",
+                "The recorded run is terminal and cannot retry failed steps.",
                 step_id=request.step_id,
                 capability_id=capability_id or None,
             )
@@ -87,7 +87,7 @@ class RetryService:
                 step_id=request.step_id,
                 capability_id=capability_id or None,
             )
-        if run_state in {"completed", "completed_with_warnings", "failed_terminal"}:
+        if run_state in {"completed", "completed_with_warnings", "failed_terminal", "sample_reset"}:
             raise _rejected(
                 "terminal_run_retry",
                 "The recorded run is terminal and cannot retry failed steps.",

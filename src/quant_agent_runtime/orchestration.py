@@ -18,7 +18,13 @@ from quant_agent_runtime.validation.errors import RuntimeValidationError
 
 
 _COMPLETE_STATUSES = {"completed", "completed_with_warnings", "informational", "unsupported"}
-_TERMINAL_RUN_STATES = {"completed", "completed_with_warnings", "failed_terminal", "cancelled"}
+_TERMINAL_RUN_STATES = {
+    "completed",
+    "completed_with_warnings",
+    "failed_terminal",
+    "cancelled",
+    "sample_reset",
+}
 
 
 class OrchestrationService:
@@ -37,11 +43,12 @@ def orchestration_for_entry(entry: LedgerEntry) -> RunOrchestrationResult:
     raw_steps = snapshot.get("proposed_steps")
     steps_payload = raw_steps if isinstance(raw_steps, list) else []
     run_is_cancelled = entry.final_status == "cancelled" or bool(entry.cancellation_events)
+    run_is_sample_reset = entry.final_status == "sample_reset"
     run_is_paused = latest_recovery_event_type(entry) == "pause"
     plan_blocked = _plan_is_blocked(snapshot)
 
     summaries: list[OrchestrationStepSummary] = []
-    dependency_blocked = run_is_cancelled or run_is_paused or plan_blocked
+    dependency_blocked = run_is_cancelled or run_is_sample_reset or run_is_paused or plan_blocked
     current_step_id: str | None = None
     blocking_label: str | None = None
 
@@ -54,6 +61,7 @@ def orchestration_for_entry(entry: LedgerEntry) -> RunOrchestrationResult:
             dependency_blocked=dependency_blocked,
             blocking_label=blocking_label,
             run_is_cancelled=run_is_cancelled,
+            run_is_sample_reset=run_is_sample_reset,
             run_is_paused=run_is_paused,
         )
         if current_step_id is None and _is_current_status(summary.status):
@@ -177,6 +185,7 @@ def _step_summary(
     dependency_blocked: bool,
     blocking_label: str | None,
     run_is_cancelled: bool,
+    run_is_sample_reset: bool,
     run_is_paused: bool,
 ) -> OrchestrationStepSummary:
     step_id = str(step.get("step_id") or "")
@@ -197,7 +206,11 @@ def _step_summary(
     latest_preview = _latest_action_request(entry, step_id, capability_id, app_id, False)
     latest_action_result = _latest_action_result(entry, step_id, capability_id, app_id)
 
-    if run_is_cancelled:
+    if run_is_sample_reset:
+        status: OrchestrationStepStatus = "cancelled"
+        required_gate = None
+        blocker_reason = "The sample-owned demo run has been reset."
+    elif run_is_cancelled:
         status: OrchestrationStepStatus = "cancelled"
         required_gate = None
         blocker_reason = "The run has been cancelled."
@@ -302,6 +315,8 @@ def _run_state_from_summaries(
     current_step: OrchestrationStepSummary | None,
     summaries: list[OrchestrationStepSummary],
 ) -> RunState:
+    if entry.final_status == "sample_reset":
+        return "sample_reset"
     if entry.final_status == "cancelled" or entry.cancellation_events:
         return "cancelled"
     if latest_recovery_event_type(entry) == "pause":

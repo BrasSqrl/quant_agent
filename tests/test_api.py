@@ -32,7 +32,11 @@ from quant_agent_runtime.revalidation import RunRevalidationService
 from quant_agent_runtime.retry import RetryService
 from quant_agent_runtime.runtime import RuntimeContainer
 from quant_agent_runtime.run_status import RunStatusService
-from quant_agent_runtime.sample_autopilot import SampleAutopilotPreviewService
+from quant_agent_runtime.sample_autopilot import (
+    SampleAutopilotPreviewService,
+    SampleAutopilotStepService,
+)
+from quant_agent_runtime.sample_reset import SampleResetService
 
 
 AGENT_ROOT = Path(__file__).resolve().parents[1]
@@ -47,6 +51,8 @@ class FakePreflightAppClient:
         execution_response: dict[str, Any] | None = None,
         execution_responses_by_capability: dict[str, dict[str, Any]] | None = None,
         execution_error: AppClientError | None = None,
+        reset_response: dict[str, Any] | None = None,
+        reset_error: AppClientError | None = None,
         discovery_payloads_by_app: dict[str, dict[str, Any]] | None = None,
         discovery_errors_by_app: dict[str, AppClientError] | None = None,
         error: AppClientError | None = None,
@@ -56,6 +62,8 @@ class FakePreflightAppClient:
         self.execution_response = execution_response or _valid_action_result()
         self.execution_responses_by_capability = execution_responses_by_capability or {}
         self.execution_error = execution_error
+        self.reset_response = reset_response or _valid_sample_reset_response()
+        self.reset_error = reset_error
         default_discovery_payloads = {
             "quant_data": _capabilities_payload("quant_data"),
             "quant_studio": _capabilities_payload("quant_studio"),
@@ -69,6 +77,7 @@ class FakePreflightAppClient:
         self.error = error
         self.calls: list[dict[str, Any]] = []
         self.execution_calls: list[dict[str, Any]] = []
+        self.reset_calls: list[dict[str, Any]] = []
         self.discovery_calls: list[str] = []
 
     def discover_capabilities(self, *, app_id: str) -> dict[str, Any]:
@@ -131,6 +140,12 @@ class FakePreflightAppClient:
             response = _valid_documentation_action_result(step_id="step_4")
         return copy.deepcopy(response or self.execution_response)
 
+    def reset_sample_workspaces(self) -> dict[str, Any]:
+        self.reset_calls.append({"app_id": "quant_studio", "route": "/api/sample-workspaces/reset"})
+        if self.reset_error is not None:
+            raise self.reset_error
+        return copy.deepcopy(self.reset_response)
+
 
 class RevisionProvider:
     def __init__(self, raw_output: dict[str, Any]) -> None:
@@ -160,20 +175,22 @@ def runtime_with_preflight_client(
         app_client=app_client,
         capability_discovery=discovery,
     )
+    preflight = PreflightService(
+        ledger=ledger,
+        contract_loader=loader,
+        app_client=app_client,
+        capability_discovery=discovery,
+    )
+    action_request = ActionRequestPreviewService(ledger=ledger, contract_loader=loader)
     return RuntimeContainer(
         planner=PlannerService(
             provider=FakePlanProvider(provider_status=provider_status),
             ledger=ledger,
             default_capabilities=capabilities or None,
         ),
-        preflight=PreflightService(
-            ledger=ledger,
-            contract_loader=loader,
-            app_client=app_client,
-            capability_discovery=discovery,
-        ),
+        preflight=preflight,
         confirmation=ConfirmationService(ledger=ledger),
-        action_request=ActionRequestPreviewService(ledger=ledger, contract_loader=loader),
+        action_request=action_request,
         execution=execution,
         retry=RetryService(ledger=ledger, execution=execution, app_client=app_client),
         run_status=RunStatusService(ledger=ledger, capability_discovery=discovery),
@@ -191,6 +208,18 @@ def runtime_with_preflight_client(
         revalidation=RunRevalidationService(ledger=ledger),
         sample_autopilot=SampleAutopilotPreviewService(
             ledger=ledger,
+            sample_workspace_root=sample_workspace_root or QUANT_SUITE_ROOT / "fixtures" / "sample_workspaces",
+        ),
+        sample_autopilot_step=SampleAutopilotStepService(
+            ledger=ledger,
+            preflight=preflight,
+            action_request=action_request,
+            execution=execution,
+            sample_workspace_root=sample_workspace_root or QUANT_SUITE_ROOT / "fixtures" / "sample_workspaces",
+        ),
+        sample_reset=SampleResetService(
+            ledger=ledger,
+            app_client=app_client,
             sample_workspace_root=sample_workspace_root or QUANT_SUITE_ROOT / "fixtures" / "sample_workspaces",
         ),
         contract_loader=loader,
@@ -285,6 +314,22 @@ def _valid_action_result(
         },
         "retry_allowed": False,
         "state_changed_since_planning": False,
+    }
+
+
+def _valid_sample_reset_response() -> dict[str, Any]:
+    return {
+        "status": "reset",
+        "deleted_lifecycle_ids": ["sample_credit_pd_scorecard_panel"],
+        "warnings": ["quant_data sample reset skipped in test harness"],
+        "lifecycle_response": {
+            "manifests": [
+                {
+                    "lifecycle_id": "lifecycle_user_keep",
+                    "label": "User lifecycle preserved",
+                }
+            ]
+        },
     }
 
 
@@ -770,6 +815,9 @@ def test_runtime_manifest_returns_supported_modes() -> None:
     assert "POST /plan-revision-activations" in manifest["supported_routes"]
     assert "POST /run-revalidations" in manifest["supported_routes"]
     assert "POST /autopilot-previews" in manifest["supported_routes"]
+    assert "POST /autopilot-steps" in manifest["supported_routes"]
+    assert "POST /sample-reset-previews" in manifest["supported_routes"]
+    assert "POST /sample-resets" in manifest["supported_routes"]
     assert manifest["runtime_health_endpoint"] == "/health"
     assert manifest["execution_support_level"] == "single_step_review_draft_actions_only"
     assert manifest["ledger_support_level"] == "local_json_file_backed"
@@ -779,7 +827,8 @@ def test_runtime_manifest_returns_supported_modes() -> None:
     assert manifest["plan_revision_support_level"] == "manual_preview_only"
     assert manifest["plan_revision_activation_support_level"] == "manual_child_run_only"
     assert manifest["revalidation_support_level"] == "manual_context_check_only"
-    assert manifest["autopilot_support_level"] == "sample_owned_dry_run_preview_only"
+    assert manifest["autopilot_support_level"] == "sample_owned_one_step_manual_advance"
+    assert manifest["sample_reset_support_level"] == "sample_owned_studio_orchestrated_only"
     assert manifest["ledger_storage"]["storage_mode"] == "memory"
     assert manifest["provider_status"]["supports_execution"] is False
     assert manifest["provider_status"]["hosted_provider_enabled"] is False
@@ -3791,6 +3840,82 @@ def test_sample_autopilot_preview_allows_credit_pd_sample_and_validates_ledger()
     )
 
 
+def test_sample_autopilot_preview_blocks_non_demo_shaped_active_plan() -> None:
+    runtime = runtime_with_preflight_client(FakePreflightAppClient())
+    client = TestClient(create_app(runtime))
+    plan = client.post(
+        "/plans",
+        json={
+            "user_goal": "Preview a sample autopilot path with stale active plan shape.",
+            "context_summary": _safe_sample_lifecycle_context(),
+        },
+    ).json()
+    entry = runtime.planner.ledger.get(plan["run_id"])
+    assert entry is not None
+    stale_snapshot = copy.deepcopy(entry.plan_snapshot)
+    stale_snapshot["proposed_steps"] = [
+        stale_snapshot["proposed_steps"][1],
+        stale_snapshot["proposed_steps"][0],
+        *stale_snapshot["proposed_steps"][2:],
+    ]
+    runtime.planner.ledger._entries[0] = entry.model_copy(  # noqa: SLF001 - corrupts test ledger intentionally.
+        update={"plan_snapshot": stale_snapshot},
+        deep=True,
+    )
+
+    preview = client.post(
+        "/autopilot-previews",
+        json={
+            "run_id": plan["run_id"],
+            "autopilot_intent": "preview_sample_autopilot",
+            "current_context_summary": _safe_sample_lifecycle_context(),
+        },
+    )
+
+    assert preview.status_code == 200
+    assert preview.json()["sample_eligibility"]["status"] == "blocked"
+    assert any(
+        "Phase 7 sample demo capability sequence" in blocker
+        for blocker in preview.json()["sample_eligibility"]["blockers"]
+    )
+
+
+def test_sample_autopilot_preview_blocks_stale_demo_gate_metadata() -> None:
+    runtime = runtime_with_preflight_client(FakePreflightAppClient())
+    client = TestClient(create_app(runtime))
+    plan = client.post(
+        "/plans",
+        json={
+            "user_goal": "Preview a sample autopilot path with stale gate metadata.",
+            "context_summary": _safe_sample_lifecycle_context(),
+        },
+    ).json()
+    entry = runtime.planner.ledger.get(plan["run_id"])
+    assert entry is not None
+    stale_snapshot = copy.deepcopy(entry.plan_snapshot)
+    stale_snapshot["proposed_steps"][0]["preflight_required"] = False
+    runtime.planner.ledger._entries[0] = entry.model_copy(  # noqa: SLF001 - corrupts test ledger intentionally.
+        update={"plan_snapshot": stale_snapshot},
+        deep=True,
+    )
+
+    preview = client.post(
+        "/autopilot-previews",
+        json={
+            "run_id": plan["run_id"],
+            "autopilot_intent": "preview_sample_autopilot",
+            "current_context_summary": _safe_sample_lifecycle_context(),
+        },
+    )
+
+    assert preview.status_code == 200
+    assert preview.json()["sample_eligibility"]["status"] == "blocked"
+    assert any(
+        "gate metadata is stale for quant_data.run_source_preflight" in blocker
+        for blocker in preview.json()["sample_eligibility"]["blockers"]
+    )
+
+
 def test_sample_autopilot_preview_reflects_current_gated_orchestration_state() -> None:
     runtime = runtime_with_preflight_client(FakePreflightAppClient())
     client = TestClient(create_app(runtime))
@@ -4079,6 +4204,846 @@ def test_sample_autopilot_preview_rejects_unknown_run_and_extra_payload_fields()
     assert unknown.status_code == 422
     assert unknown.json()["detail"]["errors"][0]["code"] == "unknown_run"
     assert extra.status_code == 422
+
+
+def test_sample_autopilot_step_advances_data_preflight_and_validates_ledger() -> None:
+    app_client = FakePreflightAppClient()
+    runtime = runtime_with_preflight_client(app_client)
+    client = TestClient(create_app(runtime))
+    plan = client.post(
+        "/plans",
+        json={
+            "user_goal": "Advance the sample autopilot path one step.",
+            "context_summary": _safe_sample_lifecycle_context(),
+        },
+    ).json()
+
+    response = client.post(
+        "/autopilot-steps",
+        json={
+            "run_id": plan["run_id"],
+            "autopilot_intent": "advance_sample_autopilot_one_step",
+            "current_context_summary": _safe_sample_lifecycle_context(),
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["selected_action"] == "run_preflight"
+    assert payload["advance_status"] == "advanced"
+    assert payload["delegated_result"]["preflight"]["status"] == "ready"
+    assert payload["orchestration"]["current_step_id"] == _step_for_capability(
+        plan,
+        "quant_studio.prepare_model_config_draft",
+    )["step_id"]
+    assert app_client.calls == [
+        {
+            "app_id": "quant_data",
+            "capability_id": "quant_data.run_source_preflight",
+            "payload": app_client.calls[0]["payload"],
+        }
+    ]
+    assert app_client.execution_calls == []
+    entry = runtime.planner.ledger.get(plan["run_id"])
+    assert entry is not None
+    assert entry.preflight_records[-1]["capability_id"] == "quant_data.run_source_preflight"
+    assert entry.recovery_events[-1]["event_type"] == "sample_autopilot_step"
+    assert entry.recovery_events[-1]["selected_action"] == "run_preflight"
+    assert entry.recovery_events[-1]["single_step_only"] is True
+    assert entry.recovery_events[-1]["execution_permitted"] is False
+    runtime.contract_loader.validate_agent_contract_payload(
+        entry.model_dump(mode="json"),
+        "agent_execution_ledger.v1.schema.json",
+    )
+
+
+def test_sample_autopilot_step_stops_for_manual_confirmation_without_confirming() -> None:
+    runtime = runtime_with_preflight_client(FakePreflightAppClient())
+    client = TestClient(create_app(runtime))
+    plan = client.post(
+        "/plans",
+        json={
+            "user_goal": "Advance until the manual Studio confirmation gate.",
+            "context_summary": _safe_sample_lifecycle_context(),
+        },
+    ).json()
+    _run_source_preflight(client, plan)
+
+    response = client.post(
+        "/autopilot-steps",
+        json={
+            "run_id": plan["run_id"],
+            "autopilot_intent": "advance_sample_autopilot_one_step",
+            "current_context_summary": _safe_sample_lifecycle_context(),
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["selected_action"] == "confirm_step"
+    assert response.json()["advance_status"] == "manual_confirmation_required"
+    entry = runtime.planner.ledger.get(plan["run_id"])
+    assert entry is not None
+    assert entry.confirmation_records == []
+    assert entry.action_requests == []
+    assert entry.action_results == []
+    assert entry.recovery_events[-1]["status"] == "manual_confirmation_required"
+
+
+def test_sample_autopilot_step_advances_studio_preview_then_execution_after_confirmation() -> None:
+    app_client = FakePreflightAppClient()
+    runtime = runtime_with_preflight_client(app_client)
+    client = TestClient(create_app(runtime))
+    plan = client.post(
+        "/plans",
+        json={
+            "user_goal": "Advance the confirmed Studio sample step.",
+            "context_summary": _safe_sample_lifecycle_context(),
+        },
+    ).json()
+    _advance_to_studio_step(client, plan)
+    studio_step = _step_for_capability(plan, "quant_studio.prepare_model_config_draft")
+    assert client.post(
+        "/confirmations",
+        json={
+            "run_id": plan["run_id"],
+            "step_id": studio_step["step_id"],
+            "confirmation_intent": "approve_plan_step",
+        },
+    ).status_code == 200
+
+    preview = client.post(
+        "/autopilot-steps",
+        json={
+            "run_id": plan["run_id"],
+            "autopilot_intent": "advance_sample_autopilot_one_step",
+            "current_context_summary": _safe_sample_lifecycle_context(),
+        },
+    )
+    execution = client.post(
+        "/autopilot-steps",
+        json={
+            "run_id": plan["run_id"],
+            "autopilot_intent": "advance_sample_autopilot_one_step",
+            "current_context_summary": _safe_sample_lifecycle_context(),
+        },
+    )
+
+    assert preview.status_code == 200
+    assert preview.json()["selected_action"] == "preview_action_request"
+    assert preview.json()["advance_status"] == "advanced"
+    assert preview.json()["delegated_result"]["action_request"]["execution_permitted"] is False
+    assert execution.status_code == 200
+    assert execution.json()["selected_action"] == "execute_step"
+    assert execution.json()["advance_status"] == "advanced"
+    assert execution.json()["delegated_result"]["action_result"]["execution_status"] == "succeeded"
+    assert len(app_client.execution_calls) == 1
+    assert app_client.execution_calls[0]["capability_id"] == "quant_studio.prepare_model_config_draft"
+    entry = runtime.planner.ledger.get(plan["run_id"])
+    assert entry is not None
+    assert entry.action_requests[-1]["execution_permitted"] is True
+    assert entry.recovery_events[-2]["selected_action"] == "preview_action_request"
+    assert entry.recovery_events[-1]["selected_action"] == "execute_step"
+
+
+def test_sample_autopilot_step_advances_documentation_and_monitoring_paths() -> None:
+    responses_by_capability = {
+        "quant_monitoring.validate_bundle": _valid_preflight_response(
+            capability_id="quant_monitoring.validate_bundle",
+            app_id="quant_monitoring",
+        )
+    }
+    app_client = FakePreflightAppClient(responses_by_capability=responses_by_capability)
+    runtime = runtime_with_preflight_client(app_client)
+    client = TestClient(create_app(runtime))
+    plan = client.post(
+        "/plans",
+        json={
+            "user_goal": "Advance documentation and monitoring sample steps.",
+            "context_summary": _safe_sample_lifecycle_context(),
+        },
+    ).json()
+    _advance_to_documentation_step(client, plan)
+    documentation_step = _step_for_capability(plan, "quant_documentation.create_draft_workspace")
+    assert client.post(
+        "/confirmations",
+        json={
+            "run_id": plan["run_id"],
+            "step_id": documentation_step["step_id"],
+            "confirmation_intent": "approve_plan_step",
+        },
+    ).status_code == 200
+
+    documentation_preview = client.post(
+        "/autopilot-steps",
+        json={
+            "run_id": plan["run_id"],
+            "autopilot_intent": "advance_sample_autopilot_one_step",
+            "current_context_summary": _safe_sample_lifecycle_context(),
+        },
+    )
+    documentation_execution = client.post(
+        "/autopilot-steps",
+        json={
+            "run_id": plan["run_id"],
+            "autopilot_intent": "advance_sample_autopilot_one_step",
+            "current_context_summary": _safe_sample_lifecycle_context(),
+        },
+    )
+    monitoring_preflight = client.post(
+        "/autopilot-steps",
+        json={
+            "run_id": plan["run_id"],
+            "autopilot_intent": "advance_sample_autopilot_one_step",
+            "current_context_summary": _safe_sample_lifecycle_context(),
+        },
+    )
+
+    assert documentation_preview.status_code == 200
+    assert documentation_preview.json()["selected_action"] == "preview_action_request"
+    assert documentation_preview.json()["capability_id"] == "quant_documentation.create_draft_workspace"
+    assert documentation_execution.status_code == 200
+    assert documentation_execution.json()["selected_action"] == "execute_step"
+    assert documentation_execution.json()["delegated_result"]["action_result"]["capability_id"] == (
+        "quant_documentation.create_draft_workspace"
+    )
+    assert monitoring_preflight.status_code == 200
+    assert monitoring_preflight.json()["selected_action"] == "run_preflight"
+    assert monitoring_preflight.json()["capability_id"] == "quant_monitoring.validate_bundle"
+    assert app_client.calls[-1]["capability_id"] == "quant_monitoring.validate_bundle"
+    assert app_client.execution_calls[-1]["capability_id"] == (
+        "quant_documentation.create_draft_workspace"
+    )
+
+
+def test_sample_autopilot_step_blocks_invalid_states_without_app_calls() -> None:
+    app_client = FakePreflightAppClient()
+    client = TestClient(create_app(runtime_with_preflight_client(app_client)))
+    unknown = client.post(
+        "/autopilot-steps",
+        json={
+            "run_id": "run_missing",
+            "autopilot_intent": "advance_sample_autopilot_one_step",
+            "current_context_summary": _safe_sample_lifecycle_context(),
+        },
+    )
+    extra = client.post(
+        "/autopilot-steps",
+        json={
+            "run_id": "run_missing",
+            "autopilot_intent": "advance_sample_autopilot_one_step",
+            "current_context_summary": _safe_sample_lifecycle_context(),
+            "step_id": "step_browser_supplied",
+        },
+    )
+    user_plan = _create_plan_with_lifecycle_reference(client)
+    user_owned = client.post(
+        "/autopilot-steps",
+        json={
+            "run_id": user_plan["run_id"],
+            "autopilot_intent": "advance_sample_autopilot_one_step",
+            "current_context_summary": _safe_lifecycle_context(),
+        },
+    )
+    unsafe_plan = client.post(
+        "/plans",
+        json={
+            "user_goal": "Plan a safe sample path.",
+            "context_summary": _safe_sample_lifecycle_context(),
+        },
+    ).json()
+    unsafe = client.post(
+        "/autopilot-steps",
+        json={
+            "run_id": unsafe_plan["run_id"],
+            "autopilot_intent": "advance_sample_autopilot_one_step",
+            "current_context_summary": {
+                **_safe_sample_lifecycle_context(),
+                "raw_path": "C:\\private\\raw.csv",
+            },
+        },
+    )
+
+    assert unknown.status_code == 422
+    assert unknown.json()["detail"]["errors"][0]["code"] == "unknown_run"
+    assert extra.status_code == 422
+    assert user_owned.status_code == 200
+    assert user_owned.json()["advance_status"] == "blocked"
+    assert unsafe.status_code == 200
+    assert unsafe.json()["advance_status"] == "blocked"
+    assert "private\\raw.csv" not in unsafe.text
+    assert app_client.calls == []
+    assert app_client.execution_calls == []
+
+
+def test_sample_autopilot_step_blocks_non_demo_paused_cancelled_and_retry_states() -> None:
+    non_demo_runtime = runtime_with_preflight_client(FakePreflightAppClient())
+    non_demo_client = TestClient(create_app(non_demo_runtime))
+    non_demo_plan = client_plan = non_demo_client.post(
+        "/plans",
+        json={
+            "user_goal": "Advance a stale sample plan.",
+            "context_summary": _safe_sample_lifecycle_context(),
+        },
+    ).json()
+    entry = non_demo_runtime.planner.ledger.get(client_plan["run_id"])
+    assert entry is not None
+    stale_snapshot = copy.deepcopy(entry.plan_snapshot)
+    stale_snapshot["proposed_steps"] = stale_snapshot["proposed_steps"][:2]
+    non_demo_runtime.planner.ledger._entries[0] = entry.model_copy(  # noqa: SLF001 - corrupts test ledger intentionally.
+        update={"plan_snapshot": stale_snapshot},
+        deep=True,
+    )
+    non_demo = non_demo_client.post(
+        "/autopilot-steps",
+        json={
+            "run_id": non_demo_plan["run_id"],
+            "autopilot_intent": "advance_sample_autopilot_one_step",
+            "current_context_summary": _safe_sample_lifecycle_context(),
+        },
+    )
+
+    paused_runtime = runtime_with_preflight_client(FakePreflightAppClient())
+    paused_client = TestClient(create_app(paused_runtime))
+    paused_plan = paused_client.post(
+        "/plans",
+        json={
+            "user_goal": "Advance paused sample plan.",
+            "context_summary": _safe_sample_lifecycle_context(),
+        },
+    ).json()
+    assert paused_client.post(
+        "/pauses",
+        json={"run_id": paused_plan["run_id"], "pause_intent": "pause_run", "reason": "user_paused"},
+    ).status_code == 200
+    paused = paused_client.post(
+        "/autopilot-steps",
+        json={
+            "run_id": paused_plan["run_id"],
+            "autopilot_intent": "advance_sample_autopilot_one_step",
+            "current_context_summary": _safe_sample_lifecycle_context(),
+        },
+    )
+
+    cancelled_runtime = runtime_with_preflight_client(FakePreflightAppClient())
+    cancelled_client = TestClient(create_app(cancelled_runtime))
+    cancelled_plan = cancelled_client.post(
+        "/plans",
+        json={
+            "user_goal": "Advance cancelled sample plan.",
+            "context_summary": _safe_sample_lifecycle_context(),
+        },
+    ).json()
+    assert cancelled_client.post(
+        "/cancellations",
+        json={
+            "run_id": cancelled_plan["run_id"],
+            "cancellation_intent": "cancel_run",
+            "reason": "user_cancelled",
+        },
+    ).status_code == 200
+    cancelled = cancelled_client.post(
+        "/autopilot-steps",
+        json={
+            "run_id": cancelled_plan["run_id"],
+            "autopilot_intent": "advance_sample_autopilot_one_step",
+            "current_context_summary": _safe_sample_lifecycle_context(),
+        },
+    )
+
+    failed_result = _valid_action_result("failed_recoverable")
+    failed_result["retry_allowed"] = True
+    retry_runtime = runtime_with_preflight_client(FakePreflightAppClient(execution_response=failed_result))
+    retry_client = TestClient(create_app(retry_runtime))
+    retry_plan = retry_client.post(
+        "/plans",
+        json={
+            "user_goal": "Advance retry-required sample plan.",
+            "context_summary": _safe_sample_lifecycle_context(),
+        },
+    ).json()
+    _advance_to_studio_step(retry_client, retry_plan)
+    studio_step = _step_for_capability(retry_plan, "quant_studio.prepare_model_config_draft")
+    assert retry_client.post(
+        "/confirmations",
+        json={
+            "run_id": retry_plan["run_id"],
+            "step_id": studio_step["step_id"],
+            "confirmation_intent": "approve_plan_step",
+        },
+    ).status_code == 200
+    assert retry_client.post(
+        "/action-requests",
+        json={"run_id": retry_plan["run_id"], "step_id": studio_step["step_id"]},
+    ).status_code == 200
+    assert retry_client.post(
+        "/executions",
+        json={"run_id": retry_plan["run_id"], "step_id": studio_step["step_id"]},
+    ).status_code == 200
+    retry_required = retry_client.post(
+        "/autopilot-steps",
+        json={
+            "run_id": retry_plan["run_id"],
+            "autopilot_intent": "advance_sample_autopilot_one_step",
+            "current_context_summary": _safe_sample_lifecycle_context(),
+        },
+    )
+
+    assert non_demo.status_code == 200
+    assert non_demo.json()["advance_status"] == "blocked"
+    assert paused.status_code == 200
+    assert paused.json()["advance_status"] == "blocked"
+    assert cancelled.status_code == 200
+    assert cancelled.json()["advance_status"] == "blocked"
+    assert retry_required.status_code == 200
+    assert retry_required.json()["selected_action"] == "retry_failed_step"
+    assert retry_required.json()["advance_status"] == "manual_retry_required"
+
+
+def test_sample_autopilot_step_ledgers_delegated_failures_without_leaking_values() -> None:
+    unavailable_app = FakePreflightAppClient(error=AppClientError("Quant Data unavailable.", status_code=503))
+    unavailable_runtime = runtime_with_preflight_client(unavailable_app)
+    unavailable_client = TestClient(create_app(unavailable_runtime))
+    unavailable_plan = unavailable_client.post(
+        "/plans",
+        json={
+            "user_goal": "Advance unavailable sample preflight.",
+            "context_summary": _safe_sample_lifecycle_context(),
+        },
+    ).json()
+    unavailable = unavailable_client.post(
+        "/autopilot-steps",
+        json={
+            "run_id": unavailable_plan["run_id"],
+            "autopilot_intent": "advance_sample_autopilot_one_step",
+            "current_context_summary": _safe_sample_lifecycle_context(),
+        },
+    )
+
+    unsafe_response = _valid_preflight_response()
+    unsafe_response["raw_path"] = "C:\\private\\rows.csv"
+    unsafe_app = FakePreflightAppClient(response=unsafe_response)
+    unsafe_runtime = runtime_with_preflight_client(unsafe_app)
+    unsafe_client = TestClient(create_app(unsafe_runtime))
+    unsafe_plan = unsafe_client.post(
+        "/plans",
+        json={
+            "user_goal": "Advance unsafe sample preflight.",
+            "context_summary": _safe_sample_lifecycle_context(),
+        },
+    ).json()
+    unsafe = unsafe_client.post(
+        "/autopilot-steps",
+        json={
+            "run_id": unsafe_plan["run_id"],
+            "autopilot_intent": "advance_sample_autopilot_one_step",
+            "current_context_summary": _safe_sample_lifecycle_context(),
+        },
+    )
+
+    assert unavailable.status_code == 200
+    assert unavailable.json()["advance_status"] == "delegated_app_unavailable"
+    assert unavailable.json()["validation"]["status"] == "rejected"
+    assert "Quant Data unavailable" not in unavailable.text
+    unavailable_entry = unavailable_runtime.planner.ledger.get(unavailable_plan["run_id"])
+    assert unavailable_entry is not None
+    assert unavailable_entry.recovery_events[-1]["status"] == "delegated_app_unavailable"
+    assert unavailable_entry.preflight_records == []
+    unavailable_runtime.contract_loader.validate_agent_contract_payload(
+        unavailable_entry.model_dump(mode="json"),
+        "agent_execution_ledger.v1.schema.json",
+    )
+
+    assert unsafe.status_code == 200
+    assert unsafe.json()["advance_status"] == "delegated_rejected"
+    assert unsafe.json()["validation"]["status"] == "rejected"
+    assert "private\\rows.csv" not in unsafe.text
+    unsafe_entry = unsafe_runtime.planner.ledger.get(unsafe_plan["run_id"])
+    assert unsafe_entry is not None
+    assert unsafe_entry.preflight_records == []
+    assert unsafe_entry.recovery_events[-1]["status"] == "delegated_rejected"
+
+
+def test_sample_reset_preview_and_reset_mark_run_terminal_and_block_gated_actions() -> None:
+    app_client = FakePreflightAppClient()
+    runtime = runtime_with_preflight_client(app_client)
+    client = TestClient(create_app(runtime))
+    plan = client.post(
+        "/plans",
+        json={
+            "user_goal": "Reset the sample demo after review.",
+            "context_summary": _safe_sample_lifecycle_context(),
+        },
+    ).json()
+
+    preview = client.post(
+        "/sample-reset-previews",
+        json={
+            "run_id": plan["run_id"],
+            "reset_intent": "preview_sample_reset",
+            "current_context_summary": _safe_sample_lifecycle_context(),
+        },
+    )
+    assert preview.status_code == 200
+    preview_payload = preview.json()
+    reset_preview_id = preview_payload["reset_preview_id"]
+    assert preview_payload["sample_eligibility"]["eligible"] is True
+    assert preview_payload["reset_boundary_summary"]["sample_owned_only"] is True
+    assert "sample_lifecycle_manifest" in preview_payload["reset_boundary_summary"]["allowed_delete_scopes"]
+
+    reset = client.post(
+        "/sample-resets",
+        json={
+            "run_id": plan["run_id"],
+            "reset_intent": "reset_sample_demo",
+            "reset_preview_id": reset_preview_id,
+            "current_context_summary": _safe_sample_lifecycle_context(),
+        },
+    )
+    duplicate = client.post(
+        "/sample-resets",
+        json={
+            "run_id": plan["run_id"],
+            "reset_intent": "reset_sample_demo",
+            "reset_preview_id": reset_preview_id,
+            "current_context_summary": _safe_sample_lifecycle_context(),
+        },
+    )
+
+    assert reset.status_code == 200
+    reset_payload = reset.json()
+    assert reset_payload["reset_status"] == "reset"
+    assert reset_payload["orchestration"]["run_state"] == "sample_reset"
+    assert reset_payload["orchestration"]["final_status"] == "sample_reset"
+    assert reset_payload["reset_result"] == {
+        "result_type": "sample_workspace_reset",
+        "status": "reset",
+        "deleted_lifecycle_ids": ["sample_credit_pd_scorecard_panel"],
+        "deleted_lifecycle_count": 1,
+        "warning_count": 1,
+        "warning_labels": ["warning_1"],
+    }
+    assert "lifecycle_response" not in json.dumps(reset_payload["reset_result"])
+    assert duplicate.status_code == 200
+    assert duplicate.json()["reset_status"] == "reset"
+    assert app_client.reset_calls == [
+        {"app_id": "quant_studio", "route": "/api/sample-workspaces/reset"}
+    ]
+    assert app_client.calls == []
+    assert app_client.execution_calls == []
+
+    entry = runtime.planner.ledger.get(plan["run_id"])
+    assert entry is not None
+    assert entry.final_status == "sample_reset"
+    assert [event["event_type"] for event in entry.recovery_events[-2:]] == [
+        "sample_reset_preview",
+        "sample_reset",
+    ]
+    assert entry.recovery_events[-1]["sample_owned_only"] is True
+    assert entry.recovery_events[-1]["execution_permitted"] is False
+    runtime.contract_loader.validate_agent_contract_payload(
+        entry.model_dump(mode="json"),
+        "agent_execution_ledger.v1.schema.json",
+    )
+
+    source_step = _step_for_capability(plan, "quant_data.run_source_preflight")
+    studio_step = _step_for_capability(plan, "quant_studio.prepare_model_config_draft")
+    preflight = client.post(
+        "/preflights",
+        json={"run_id": plan["run_id"], "step_id": source_step["step_id"]},
+    )
+    confirmation = client.post(
+        "/confirmations",
+        json={
+            "run_id": plan["run_id"],
+            "step_id": studio_step["step_id"],
+            "confirmation_intent": "approve_plan_step",
+        },
+    )
+    action_request = client.post(
+        "/action-requests",
+        json={"run_id": plan["run_id"], "step_id": studio_step["step_id"]},
+    )
+    execution = client.post(
+        "/executions",
+        json={"run_id": plan["run_id"], "step_id": studio_step["step_id"]},
+    )
+    retry = client.post(
+        "/retries",
+        json={
+            "run_id": plan["run_id"],
+            "step_id": studio_step["step_id"],
+            "retry_intent": "retry_failed_step",
+        },
+    )
+    revision = client.post(
+        "/plan-revisions",
+        json={
+            "run_id": plan["run_id"],
+            "revision_intent": "revise_plan",
+            "reason": "user_requested",
+            "current_context_summary": _safe_sample_lifecycle_context(),
+        },
+    )
+    autopilot_step = client.post(
+        "/autopilot-steps",
+        json={
+            "run_id": plan["run_id"],
+            "autopilot_intent": "advance_sample_autopilot_one_step",
+            "current_context_summary": _safe_sample_lifecycle_context(),
+        },
+    )
+
+    assert preflight.status_code == 422
+    assert preflight.json()["detail"]["errors"][0]["code"] == "terminal_run_preflight"
+    assert confirmation.status_code == 422
+    assert confirmation.json()["detail"]["errors"][0]["code"] == "terminal_run_confirmation"
+    assert action_request.status_code == 422
+    assert action_request.json()["detail"]["errors"][0]["code"] == "terminal_run_action_request"
+    assert execution.status_code == 422
+    assert execution.json()["detail"]["errors"][0]["code"] == "terminal_run_execution"
+    assert retry.status_code == 422
+    assert retry.json()["detail"]["errors"][0]["code"] == "terminal_run_retry"
+    assert revision.status_code == 422
+    assert revision.json()["detail"]["errors"][0]["code"] == "terminal_run_plan_revision"
+    assert autopilot_step.status_code == 200
+    assert autopilot_step.json()["advance_status"] == "blocked"
+
+
+def test_sample_reset_preview_blocks_ineligible_contexts_and_extra_payload_fields(tmp_path: Path) -> None:
+    app_client = FakePreflightAppClient()
+    runtime = runtime_with_preflight_client(app_client)
+    client = TestClient(create_app(runtime))
+    user_plan = _create_plan_with_lifecycle_reference(client)
+    sample_plan = client.post(
+        "/plans",
+        json={
+            "user_goal": "Preview sample reset blockers.",
+            "context_summary": _safe_sample_lifecycle_context(),
+        },
+    ).json()
+
+    user_owned = client.post(
+        "/sample-reset-previews",
+        json={
+            "run_id": user_plan["run_id"],
+            "reset_intent": "preview_sample_reset",
+            "current_context_summary": _safe_lifecycle_context(),
+        },
+    )
+    unsafe = client.post(
+        "/sample-reset-previews",
+        json={
+            "run_id": sample_plan["run_id"],
+            "reset_intent": "preview_sample_reset",
+            "current_context_summary": {
+                **_safe_sample_lifecycle_context(),
+                "raw_path": "C:\\private\\raw.csv",
+            },
+        },
+    )
+    assert client.post(
+        "/pauses",
+        json={"run_id": sample_plan["run_id"], "pause_intent": "pause_run", "reason": "user_paused"},
+    ).status_code == 200
+    paused = client.post(
+        "/sample-reset-previews",
+        json={
+            "run_id": sample_plan["run_id"],
+            "reset_intent": "preview_sample_reset",
+            "current_context_summary": _safe_sample_lifecycle_context(),
+        },
+    )
+    extra = client.post(
+        "/sample-reset-previews",
+        json={
+            "run_id": sample_plan["run_id"],
+            "reset_intent": "preview_sample_reset",
+            "current_context_summary": _safe_sample_lifecycle_context(),
+            "reset_scope": "browser_supplied",
+        },
+    )
+
+    assert user_owned.status_code == 200
+    assert user_owned.json()["sample_eligibility"]["status"] == "blocked"
+    assert unsafe.status_code == 200
+    assert unsafe.json()["sample_eligibility"]["status"] == "blocked"
+    assert "private\\raw.csv" not in unsafe.text
+    assert paused.status_code == 200
+    assert any("Paused runs" in blocker for blocker in paused.json()["sample_eligibility"]["blockers"])
+    assert extra.status_code == 422
+    assert app_client.reset_calls == []
+
+    sample_root = tmp_path / "samples"
+    sample_dir = sample_root / "credit_pd_scorecard_panel"
+    sample_dir.mkdir(parents=True)
+    (sample_dir / "sample_workspace.v1.json").write_text(
+        json.dumps(
+            {
+                "sample_workspace_id": "credit_pd_scorecard_panel",
+                "label": "Credit Risk PD Scorecard",
+                "owned_marker": {
+                    "sample_workspace": True,
+                    "sample_workspace_id": "credit_pd_scorecard_panel",
+                    "sample_owned": True,
+                },
+                "lifecycle_id": "sample_credit_pd_scorecard_panel",
+                "reset_scope": {"sample_owned_only": False},
+            }
+        ),
+        encoding="utf-8",
+    )
+    missing_reset_runtime = runtime_with_preflight_client(
+        FakePreflightAppClient(),
+        sample_workspace_root=sample_root,
+    )
+    missing_reset_client = TestClient(create_app(missing_reset_runtime))
+    missing_reset_plan = missing_reset_client.post(
+        "/plans",
+        json={
+            "user_goal": "Preview a sample reset without reset boundary.",
+            "context_summary": _safe_sample_lifecycle_context(),
+        },
+    ).json()
+    missing_reset = missing_reset_client.post(
+        "/sample-reset-previews",
+        json={
+            "run_id": missing_reset_plan["run_id"],
+            "reset_intent": "preview_sample_reset",
+            "current_context_summary": _safe_sample_lifecycle_context(),
+        },
+    )
+    assert missing_reset.status_code == 200
+    assert missing_reset.json()["sample_eligibility"]["status"] == "blocked"
+    assert any(
+        "safe reset boundary" in blocker
+        for blocker in missing_reset.json()["sample_eligibility"]["blockers"]
+    )
+
+
+def test_sample_reset_requires_matching_preview_and_handles_app_failures_safely() -> None:
+    app_client = FakePreflightAppClient()
+    runtime = runtime_with_preflight_client(app_client)
+    client = TestClient(create_app(runtime))
+    plan = client.post(
+        "/plans",
+        json={
+            "user_goal": "Reset requires a ledgered preview.",
+            "context_summary": _safe_sample_lifecycle_context(),
+        },
+    ).json()
+
+    missing_preview = client.post(
+        "/sample-resets",
+        json={
+            "run_id": plan["run_id"],
+            "reset_intent": "reset_sample_demo",
+            "reset_preview_id": "preview_missing",
+            "current_context_summary": _safe_sample_lifecycle_context(),
+        },
+    )
+    preview = client.post(
+        "/sample-reset-previews",
+        json={
+            "run_id": plan["run_id"],
+            "reset_intent": "preview_sample_reset",
+            "current_context_summary": _safe_sample_lifecycle_context(),
+        },
+    ).json()
+    stale_marker = client.post(
+        "/sample-resets",
+        json={
+            "run_id": plan["run_id"],
+            "reset_intent": "reset_sample_demo",
+            "reset_preview_id": preview["reset_preview_id"],
+            "current_context_summary": _safe_sample_lifecycle_context(sample_workspace_id="monitoring_drift_review"),
+        },
+    )
+
+    assert missing_preview.status_code == 200
+    assert missing_preview.json()["reset_status"] == "blocked"
+    assert missing_preview.json()["validation"]["status"] == "rejected"
+    assert stale_marker.status_code == 200
+    assert stale_marker.json()["reset_status"] == "blocked"
+    assert app_client.reset_calls == []
+
+    unavailable_app = FakePreflightAppClient(
+        reset_error=AppClientError("Quant Studio reset unavailable.", status_code=503)
+    )
+    unavailable_runtime = runtime_with_preflight_client(unavailable_app)
+    unavailable_client = TestClient(create_app(unavailable_runtime))
+    unavailable_plan = unavailable_client.post(
+        "/plans",
+        json={
+            "user_goal": "Reset with unavailable Studio.",
+            "context_summary": _safe_sample_lifecycle_context(),
+        },
+    ).json()
+    unavailable_preview = unavailable_client.post(
+        "/sample-reset-previews",
+        json={
+            "run_id": unavailable_plan["run_id"],
+            "reset_intent": "preview_sample_reset",
+            "current_context_summary": _safe_sample_lifecycle_context(),
+        },
+    ).json()
+    unavailable = unavailable_client.post(
+        "/sample-resets",
+        json={
+            "run_id": unavailable_plan["run_id"],
+            "reset_intent": "reset_sample_demo",
+            "reset_preview_id": unavailable_preview["reset_preview_id"],
+            "current_context_summary": _safe_sample_lifecycle_context(),
+        },
+    )
+    assert unavailable.status_code == 200
+    assert unavailable.json()["reset_status"] == "app_unavailable"
+    assert "Quant Studio reset unavailable" not in unavailable.text
+    unavailable_entry = unavailable_runtime.planner.ledger.get(unavailable_plan["run_id"])
+    assert unavailable_entry is not None
+    assert unavailable_entry.final_status == "planned"
+    assert unavailable_entry.recovery_events[-1]["status"] == "app_unavailable"
+
+    unsafe_app = FakePreflightAppClient(
+        reset_response={
+            **_valid_sample_reset_response(),
+            "secret": "do-not-ledger",
+            "raw_path": "C:\\private\\sample.csv",
+        }
+    )
+    unsafe_runtime = runtime_with_preflight_client(unsafe_app)
+    unsafe_client = TestClient(create_app(unsafe_runtime))
+    unsafe_plan = unsafe_client.post(
+        "/plans",
+        json={
+            "user_goal": "Reset with unsafe Studio response.",
+            "context_summary": _safe_sample_lifecycle_context(),
+        },
+    ).json()
+    unsafe_preview = unsafe_client.post(
+        "/sample-reset-previews",
+        json={
+            "run_id": unsafe_plan["run_id"],
+            "reset_intent": "preview_sample_reset",
+            "current_context_summary": _safe_sample_lifecycle_context(),
+        },
+    ).json()
+    unsafe = unsafe_client.post(
+        "/sample-resets",
+        json={
+            "run_id": unsafe_plan["run_id"],
+            "reset_intent": "reset_sample_demo",
+            "reset_preview_id": unsafe_preview["reset_preview_id"],
+            "current_context_summary": _safe_sample_lifecycle_context(),
+        },
+    )
+    assert unsafe.status_code == 200
+    assert unsafe.json()["reset_status"] == "app_rejected"
+    assert "do-not-ledger" not in unsafe.text
+    assert "private\\sample.csv" not in unsafe.text
+    unsafe_entry = unsafe_runtime.planner.ledger.get(unsafe_plan["run_id"])
+    assert unsafe_entry is not None
+    assert unsafe_entry.final_status == "planned"
+    assert unsafe_entry.recovery_events[-1]["status"] == "app_rejected"
 
 
 def test_action_request_rejects_unknown_run_unknown_step_and_browser_action_payload() -> None:

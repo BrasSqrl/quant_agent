@@ -37,6 +37,12 @@ from quant_agent_runtime.models import (
     RuntimeManifest,
     SampleAutopilotPreviewRequest,
     SampleAutopilotPreviewResult,
+    SampleAutopilotStepRequest,
+    SampleAutopilotStepResult,
+    SampleResetPreviewRequest,
+    SampleResetPreviewResult,
+    SampleResetRequest,
+    SampleResetResult,
 )
 from quant_agent_runtime.runtime import RuntimeContainer, build_runtime
 from quant_agent_runtime.validation.errors import RuntimeValidationError
@@ -217,6 +223,27 @@ def create_app(runtime: RuntimeContainer | None = None) -> FastAPI:
     def preview_sample_autopilot(request: SampleAutopilotPreviewRequest) -> SampleAutopilotPreviewResult:
         try:
             return runtime_container.sample_autopilot.preview_autopilot(request)
+        except RuntimeValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
+
+    @api.post("/autopilot-steps", response_model=SampleAutopilotStepResult)
+    def advance_sample_autopilot_step(request: SampleAutopilotStepRequest) -> SampleAutopilotStepResult:
+        try:
+            return runtime_container.sample_autopilot_step.advance_one_step(request)
+        except RuntimeValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
+
+    @api.post("/sample-reset-previews", response_model=SampleResetPreviewResult)
+    def preview_sample_reset(request: SampleResetPreviewRequest) -> SampleResetPreviewResult:
+        try:
+            return runtime_container.sample_reset.preview_reset(request)
+        except RuntimeValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
+
+    @api.post("/sample-resets", response_model=SampleResetResult)
+    def reset_sample_demo(request: SampleResetRequest) -> SampleResetResult:
+        try:
+            return runtime_container.sample_reset.reset_sample(request)
         except RuntimeValidationError as exc:
             raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
 

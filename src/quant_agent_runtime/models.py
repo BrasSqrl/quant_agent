@@ -24,6 +24,8 @@ class RiskTier(str, Enum):
 class ProviderMode(str, Enum):
     fake_provider = "fake_provider"
     disabled_or_local_fallback = "disabled_or_local_fallback"
+    openai = "openai"
+    ollama = "ollama"
 
 
 class StepOperation(str, Enum):
@@ -123,7 +125,7 @@ class ProviderRuntimeStatus(StrictModel):
     allowed_model_roles: list[str] = Field(default_factory=list)
     configured: bool
     supports_execution: Literal[False] = False
-    hosted_provider_enabled: Literal[False] = False
+    hosted_provider_enabled: bool = False
     secret_reference_present: bool = False
     secrets_exposed: Literal[False] = False
     fallback_reason: str | None = None
@@ -201,6 +203,7 @@ RunState = Literal[
     "failed_recoverable",
     "failed_terminal",
     "cancelled",
+    "sample_reset",
 ]
 
 
@@ -606,6 +609,65 @@ class SampleAutopilotPreviewResult(StrictModel):
     ledger_recorded: bool
 
 
+class SampleAutopilotStepRequest(StrictModel):
+    run_id: str = Field(min_length=1)
+    autopilot_intent: Literal["advance_sample_autopilot_one_step"]
+    current_context_summary: dict[str, Any] = Field(default_factory=dict)
+
+
+class SampleAutopilotStepResult(StrictModel):
+    run_id: str
+    step_id: str | None = None
+    capability_id: str | None = None
+    selected_action: str | None = None
+    advance_status: str
+    autopilot_event: dict[str, Any]
+    delegated_result: dict[str, Any] | None = None
+    sample_eligibility: SampleAutopilotEligibility
+    run_progress_summary: RunProgressSummary
+    orchestration: RunOrchestrationResult
+    validation: PlanValidationResult
+    ledger_recorded: bool
+
+
+class SampleResetPreviewRequest(StrictModel):
+    run_id: str = Field(min_length=1)
+    reset_intent: Literal["preview_sample_reset"]
+    current_context_summary: dict[str, Any] = Field(default_factory=dict)
+
+
+class SampleResetPreviewResult(StrictModel):
+    run_id: str
+    reset_preview_id: str | None = None
+    sample_eligibility: SampleAutopilotEligibility
+    reset_boundary_summary: dict[str, Any]
+    run_progress_summary: RunProgressSummary
+    orchestration: RunOrchestrationResult
+    validation: PlanValidationResult
+    ledger_recorded: bool
+
+
+class SampleResetRequest(StrictModel):
+    run_id: str = Field(min_length=1)
+    reset_intent: Literal["reset_sample_demo"]
+    reset_preview_id: str = Field(min_length=1)
+    current_context_summary: dict[str, Any] = Field(default_factory=dict)
+
+
+class SampleResetResult(StrictModel):
+    run_id: str
+    reset_preview_id: str
+    reset_status: str
+    reset_event: dict[str, Any]
+    reset_result: dict[str, Any] | None = None
+    sample_eligibility: SampleAutopilotEligibility
+    reset_boundary_summary: dict[str, Any]
+    run_progress_summary: RunProgressSummary
+    orchestration: RunOrchestrationResult
+    validation: PlanValidationResult
+    ledger_recorded: bool
+
+
 class LedgerEntry(StrictModel):
     schema_version: str = "1.0"
     data_policy: Literal["summaries_and_references_only"] = "summaries_and_references_only"
@@ -659,6 +721,7 @@ class RuntimeManifest(StrictModel):
     plan_revision_activation_support_level: str = "not_available"
     revalidation_support_level: str = "not_available"
     autopilot_support_level: str = "not_available"
+    sample_reset_support_level: str = "not_available"
     plan_only_support_level: str
     execution_support_level: str
     redaction_support_level: str

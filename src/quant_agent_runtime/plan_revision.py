@@ -79,7 +79,7 @@ class PlanRevisionService:
                 "paused_run_plan_revision",
                 "The recorded run is paused and must be resumed before plan revision preview.",
             )
-        if run_state in {"cancelled", "completed", "completed_with_warnings", "failed_terminal"}:
+        if run_state in {"cancelled", "completed", "completed_with_warnings", "failed_terminal", "sample_reset"}:
             raise _rejected(
                 "terminal_run_plan_revision",
                 "The recorded run is terminal or cancelled and cannot be revised.",
