@@ -10,6 +10,7 @@ from quant_agent_runtime.contracts import QuantSuiteContractLoader
 from quant_agent_runtime.contracts.internal_test_fixtures import TEMPORARY_AGENT_CONTRACT_FIXTURES
 from quant_agent_runtime.demo_narrative import DemoNarrativeService
 from quant_agent_runtime.execution import ExecutionService
+from quant_agent_runtime.governance import ALL_ROUTES, GovernanceService
 from quant_agent_runtime.ledger import FileBackedLedger
 from quant_agent_runtime.model_gateway import FakePlanProvider, ModelProvider, SharedLlmPlanProvider
 from quant_agent_runtime.models import ProviderMode, ProviderRuntimeStatus, RiskTier, RuntimeManifest
@@ -50,10 +51,14 @@ class RuntimeContainer:
     contract_loader: QuantSuiteContractLoader
     capability_discovery: CapabilityDiscoveryService
     provider_status: ProviderRuntimeStatus | None = None
+    governance: GovernanceService | None = None
 
     def manifest(self) -> RuntimeManifest:
         contract_result = self.contract_loader.load_agent_contracts()
         provider_status = self.provider_status or self.contract_loader.load_agent_provider_status()
+        governance = self.governance or GovernanceService.local_fallback(ledger=self.planner.ledger)
+        governance_summary = governance.manifest_summary()
+        separation_of_duties_summary = governance.separation_of_duties_manifest_summary()
         canonical_capabilities = self.contract_loader.load_agent_capabilities()
         capabilities = canonical_capabilities or default_capabilities()
         discovery_result = self.capability_discovery.discover(canonical_capabilities)
@@ -70,33 +75,7 @@ class RuntimeContainer:
             plan_only_mode=False,
             execution_supported=True,
             supported_routes=[
-                "GET /health",
-                "GET /runtime/manifest",
-                "POST /plans",
-                "POST /preflights",
-                "POST /confirmations",
-                "POST /action-requests",
-                "POST /executions",
-                "POST /retries",
-                "GET /runs",
-                "GET /runs/{run_id}",
-                "GET /runs/{run_id}/orchestration",
-                "GET /runs/{run_id}/ledger",
-                "POST /cancellations",
-                "POST /pauses",
-                "POST /resumptions",
-                "POST /plan-revisions",
-                "POST /plan-revision-activations",
-                "POST /run-revalidations",
-                "POST /autopilot-previews",
-                "POST /autopilot-steps",
-                "POST /sample-reset-previews",
-                "POST /sample-resets",
-                "GET /runs/{run_id}/demo-narrative",
-                "POST /user-plan-reviews",
-                "POST /user-plan-approvals",
-                "POST /user-workflow-readiness",
-                "POST /user-workflow-consents",
+                *ALL_ROUTES,
             ],
             supported_provider_modes=[
                 ProviderMode.fake_provider,
@@ -135,6 +114,8 @@ class RuntimeContainer:
             autopilot_support_level="sample_owned_one_step_manual_advance",
             sample_reset_support_level="sample_owned_studio_orchestrated_only",
             demo_narrative_support_level="sample_owned_ledger_narrative_only",
+            governance_support_level=governance.support_level,
+            separation_of_duties_support_level=governance.separation_of_duties_support_level,
             user_workflow_support_level="manual_user_owned_consent_gate_only",
             user_plan_approval_support_level="manual_active_plan_approval_only",
             plan_only_support_level="supported",
@@ -154,6 +135,8 @@ class RuntimeContainer:
             loaded_agent_contracts=loaded_contracts,
             temporary_internal_contract_fixtures=not contract_result.canonical_agent_contracts_loaded,
             provider_status=provider_status,
+            governance_summary=governance_summary,
+            separation_of_duties_summary=separation_of_duties_summary,
             safety_boundaries=[
                 "single_step_review_draft_execution_only",
                 "no_generic_execution",
@@ -191,6 +174,10 @@ def build_runtime() -> RuntimeContainer:
         contract_loader=contract_loader,
         app_client=app_client,
     )
+    governance = GovernanceService.from_contracts(
+        ledger=ledger,
+        contract_loader=contract_loader,
+    )
     preflight = PreflightService(
         ledger=ledger,
         contract_loader=contract_loader,
@@ -210,8 +197,12 @@ def build_runtime() -> RuntimeContainer:
         execution=execution,
         app_client=app_client,
     )
-    run_status = RunStatusService(ledger=ledger, capability_discovery=capability_discovery)
-    orchestration = OrchestrationService(ledger=ledger)
+    run_status = RunStatusService(
+        ledger=ledger,
+        capability_discovery=capability_discovery,
+        governance=governance,
+    )
+    orchestration = OrchestrationService(ledger=ledger, governance=governance)
     plan_revision = PlanRevisionService(
         provider=model_provider,
         ledger=ledger,
@@ -256,6 +247,7 @@ def build_runtime() -> RuntimeContainer:
         contract_loader=contract_loader,
         capability_discovery=capability_discovery,
         provider_status=provider_status,
+        governance=governance,
     )
 
 

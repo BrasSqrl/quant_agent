@@ -38,6 +38,9 @@ from quant_agent_runtime.validation import PlanValidator
 from quant_agent_runtime.validation.errors import RuntimeValidationError
 
 
+USER_PLAN_REVIEW_EVENT_TYPE = "user_plan_review"
+
+
 class PlanRevisionService:
     def __init__(
         self,
@@ -107,12 +110,14 @@ class PlanRevisionService:
         original_context = _original_context(entry)
         stale_state_summary = _stale_state_summary(original_context, sanitized_context)
         orchestration = orchestration_for_entry(entry)
-        blocker_summary = _blocker_summary(entry, orchestration)
+        review_revision_summary = _review_revision_summary(entry, parent_plan_id)
+        blocker_summary = _blocker_summary(entry, orchestration, review_revision_summary=review_revision_summary)
         _ensure_revision_allowed(
             reason=request.reason,
             run_state=run_state,
             stale_state_summary=stale_state_summary,
             blocker_summary=blocker_summary,
+            review_revision_summary=review_revision_summary,
         )
 
         context_preview = build_context_preview(
@@ -126,6 +131,7 @@ class PlanRevisionService:
             reason=request.reason,
             sanitized_context=sanitized_context,
             blocker_summary=blocker_summary,
+            review_revision_summary=review_revision_summary,
         )
         existing = _matching_revision_event(entry, fingerprint)
         if existing is not None:
@@ -156,6 +162,7 @@ class PlanRevisionService:
             blocker_summary=blocker_summary,
             stale_state_summary=stale_state_summary,
             parent_plan=snapshot,
+            review_revision_summary=review_revision_summary,
         )
         provider_result = self._provider.generate_plan(
             ProviderPlanRequest(
@@ -296,6 +303,7 @@ def _revision_context(
     blocker_summary: dict[str, Any],
     stale_state_summary: dict[str, Any],
     parent_plan: dict[str, Any],
+    review_revision_summary: dict[str, Any] | None,
 ) -> dict[str, Any]:
     context = dict(original_context)
     context.update(sanitized_context)
@@ -305,16 +313,22 @@ def _revision_context(
         "parent_missing_inputs": parent_plan.get("missing_inputs", []),
         "blocker_summary": blocker_summary,
         "stale_state_summary": stale_state_summary,
+        "requested_assumption_revisions": review_revision_summary or {},
     }
     return context
 
 
-def _blocker_summary(entry: LedgerEntry, orchestration: Any) -> dict[str, Any]:
+def _blocker_summary(
+    entry: LedgerEntry,
+    orchestration: Any,
+    *,
+    review_revision_summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     snapshot = entry.plan_snapshot if isinstance(entry.plan_snapshot, dict) else {}
     current = next((step for step in orchestration.steps if step.is_current), None)
     latest_preflight = entry.preflight_records[-1] if entry.preflight_records else None
     latest_action_result = entry.action_results[-1] if entry.action_results else None
-    return {
+    summary = {
         "run_state": orchestration.run_state,
         "final_status": entry.final_status,
         "plan_status": snapshot.get("status"),
@@ -327,6 +341,51 @@ def _blocker_summary(entry: LedgerEntry, orchestration: Any) -> dict[str, Any]:
         "latest_preflight_status": latest_preflight.get("status") if isinstance(latest_preflight, dict) else None,
         "latest_preflight_blocker_count": len(latest_preflight.get("blockers", [])) if isinstance(latest_preflight, dict) and isinstance(latest_preflight.get("blockers"), list) else 0,
         "latest_action_result_status": latest_action_result.get("execution_status") if isinstance(latest_action_result, dict) else None,
+    }
+    if review_revision_summary:
+        summary["requested_assumption_revisions"] = review_revision_summary
+    return summary
+
+
+def _review_revision_summary(entry: LedgerEntry, parent_plan_id: str) -> dict[str, Any] | None:
+    latest_review: dict[str, Any] | None = None
+    for record in reversed(entry.recovery_events):
+        if isinstance(record, dict) and record.get("event_type") == USER_PLAN_REVIEW_EVENT_TYPE:
+            latest_review = record
+            break
+    if latest_review is None:
+        return None
+
+    plan_id = latest_review.get("plan_id")
+    if plan_id != parent_plan_id:
+        return {
+            "status": "stale_review",
+            "plan_review_id": _safe_string(latest_review.get("plan_review_id") or latest_review.get("recovery_event_id")),
+            "review_plan_id": _safe_string(plan_id),
+            "active_plan_id": parent_plan_id,
+            "revision_requested": False,
+            "blocker_reason": "The latest user plan review does not match the active parent plan.",
+        }
+
+    status = _safe_string(latest_review.get("status")) or "not_reviewed"
+    revision_notes = [
+        {
+            "assumption_index": item.get("assumption_index"),
+            "safe_note": item.get("safe_note"),
+        }
+        for item in latest_review.get("revision_notes", [])
+        if isinstance(item, dict)
+    ]
+    return {
+        "status": status,
+        "plan_review_id": _safe_string(latest_review.get("plan_review_id") or latest_review.get("recovery_event_id")),
+        "plan_id": parent_plan_id,
+        "revision_requested": status == "revision_requested",
+        "total_assumption_count": _safe_int(latest_review.get("total_assumption_count")),
+        "accepted_assumption_count": _safe_int(latest_review.get("accepted_assumption_count")),
+        "revise_assumption_count": _safe_int(latest_review.get("revise_assumption_count")),
+        "revision_notes": revision_notes,
+        "blockers": _safe_string_list(latest_review.get("blockers")),
     }
 
 
@@ -365,6 +424,7 @@ def _ensure_revision_allowed(
     run_state: str,
     stale_state_summary: dict[str, Any],
     blocker_summary: dict[str, Any],
+    review_revision_summary: dict[str, Any] | None,
 ) -> None:
     stale = stale_state_summary.get("state_changed_since_planning") is True
     missing = bool(blocker_summary.get("missing_inputs"))
@@ -378,12 +438,16 @@ def _ensure_revision_allowed(
         raise _rejected("no_plan_revision_needed", "The recorded run is not in a recoverable failure state.")
     if reason == "stale_state" and not stale:
         raise _rejected("no_plan_revision_needed", "The provided current context does not differ from the planned context.")
+    revision_requested = (
+        isinstance(review_revision_summary, dict)
+        and review_revision_summary.get("revision_requested") is True
+    )
     if reason == "user_requested" and not (
-        run_state in {"waiting_for_input", "preflight_blocked", "failed_recoverable"} or stale
+        run_state in {"waiting_for_input", "preflight_blocked", "failed_recoverable"} or stale or revision_requested
     ):
         raise _rejected(
             "no_plan_revision_needed",
-            "The recorded run has no blocker, recoverable failure, or stale context evidence.",
+            "The recorded run has no blocker, recoverable failure, stale context evidence, or revision-requested plan review.",
         )
 
 
@@ -419,6 +483,7 @@ def _revision_fingerprint(
     reason: str,
     sanitized_context: dict[str, Any],
     blocker_summary: dict[str, Any],
+    review_revision_summary: dict[str, Any] | None,
 ) -> str:
     return _stable_hash(
         {
@@ -426,6 +491,7 @@ def _revision_fingerprint(
             "reason": reason,
             "current_context": sanitized_context,
             "blocker_summary": blocker_summary,
+            "review_revision_summary": review_revision_summary or {},
         }
     )
 
@@ -436,6 +502,20 @@ def _stable_hash(value: Any) -> str:
 
 def _stable_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _safe_string(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _safe_int(value: Any) -> int:
+    return value if isinstance(value, int) else 0
+
+
+def _safe_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
 
 
 def _utc_now_label() -> str:

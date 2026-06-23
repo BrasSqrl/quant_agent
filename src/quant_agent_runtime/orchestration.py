@@ -28,14 +28,23 @@ _TERMINAL_RUN_STATES = {
 
 
 class OrchestrationService:
-    def __init__(self, *, ledger: InMemoryLedger) -> None:
+    def __init__(self, *, ledger: InMemoryLedger, governance: Any | None = None) -> None:
         self._ledger = ledger
+        self._governance = governance
 
     def get_run_orchestration(self, run_id: str) -> RunOrchestrationResult:
         entry = self._ledger.get(run_id)
         if entry is None:
             raise _rejected("unknown_run", "No recorded run was found for the requested run_id.")
-        return orchestration_for_entry(entry)
+        result = orchestration_for_entry(entry)
+        if self._governance is None:
+            return result
+        return result.model_copy(
+            update={
+                "governance_summary": self._governance.run_summary(entry.run_id),
+                "separation_of_duties_summary": self._governance.separation_of_duties_run_summary(entry.run_id),
+            }
+        )
 
 
 def orchestration_for_entry(entry: LedgerEntry) -> RunOrchestrationResult:

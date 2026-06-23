@@ -53,6 +53,13 @@ class QuantSuiteContractLoader:
             source_label=self._source_label,
         )
 
+    @property
+    def source_label(self) -> str:
+        return self._source_label
+
+    def contract_file(self, name: str) -> Path:
+        return self._root / "contracts" / name
+
     def load_agent_capabilities(self) -> list[CapabilityDefinition]:
         capability_path = self._root / "contracts" / "agent_capability.v1.example.json"
         if not capability_path.is_file():

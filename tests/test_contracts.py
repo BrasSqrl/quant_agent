@@ -48,6 +48,7 @@ EXPECTED_AGENT_CONTRACTS = {
     "agent_action_result.v1.schema.json",
     "agent_capability.v1.schema.json",
     "agent_execution_ledger.v1.schema.json",
+    "agent_governance_policy_pack.v1.schema.json",
     "agent_plan.v1.schema.json",
     "agent_policy.v1.schema.json",
     "agent_provider_config.v1.schema.json",
@@ -58,6 +59,10 @@ PHASE3_AGENT_EXAMPLES = [
     ("agent_action_request.v1.example.json", "agent_action_request.v1.schema.json"),
     ("agent_action_result.v1.example.json", "agent_action_result.v1.schema.json"),
     ("agent_execution_ledger.v1.example.json", "agent_execution_ledger.v1.schema.json"),
+    (
+        "agent_governance_policy_pack.v1.example.json",
+        "agent_governance_policy_pack.v1.schema.json",
+    ),
 ]
 
 

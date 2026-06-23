@@ -41,15 +41,17 @@ class RunStatusService:
         *,
         ledger: InMemoryLedger,
         capability_discovery: CapabilityDiscoveryService | None = None,
+        governance: Any | None = None,
     ) -> None:
         self._ledger = ledger
         self._capability_discovery = capability_discovery
+        self._governance = governance
 
     def get_run_status(self, run_id: str) -> RunStatusResult:
         entry = self._ledger.get(run_id)
         if entry is None:
             raise _rejected("unknown_run", "No recorded run was found for the requested run_id.")
-        return _status_result(entry)
+        return _status_result(entry, governance=self._governance)
 
     def list_runs(
         self,
@@ -63,7 +65,7 @@ class RunStatusService:
         bounded_limit = min(max(limit, 1), 200)
         summaries: list[RunSummary] = []
         for entry in reversed(self._ledger.list_entries()):
-            summary = _run_summary(entry)
+            summary = _run_summary(entry, governance=self._governance)
             if lifecycle_id and summary.lifecycle_id != lifecycle_id:
                 continue
             if app_id and app_id not in summary.app_ids:
@@ -329,7 +331,7 @@ class RunStatusService:
         }
 
 
-def _status_result(entry: LedgerEntry) -> RunStatusResult:
+def _status_result(entry: LedgerEntry, *, governance: Any | None = None) -> RunStatusResult:
     orchestration = orchestration_for_entry(entry)
     user_workflow = user_workflow_summaries_for_entry(entry, run_state=orchestration.run_state)
     return RunStatusResult(
@@ -358,11 +360,15 @@ def _status_result(entry: LedgerEntry) -> RunStatusResult:
         consent_summary=user_workflow["consent_summary"],
         allowed_user_owned_actions=user_workflow["allowed_user_owned_actions"],
         allowed_next_actions=orchestration.allowed_next_actions,
+        governance_summary=governance.run_summary(entry.run_id) if governance is not None else None,
+        separation_of_duties_summary=(
+            governance.separation_of_duties_run_summary(entry.run_id) if governance is not None else None
+        ),
         validation=PlanValidationResult(status="valid"),
     )
 
 
-def _run_summary(entry: LedgerEntry) -> RunSummary:
+def _run_summary(entry: LedgerEntry, *, governance: Any | None = None) -> RunSummary:
     run_state = run_state_for_entry(entry)
     user_workflow = user_workflow_summaries_for_entry(entry, run_state=run_state)
     return RunSummary(
@@ -378,6 +384,8 @@ def _run_summary(entry: LedgerEntry) -> RunSummary:
         app_ids=sorted(_app_ids(entry)),
         capability_ids=sorted(_capability_ids(entry)),
         latest_action_result=_latest(entry.action_results),
+        latest_recovery=_latest(entry.recovery_events),
+        latest_cancellation=_latest(entry.cancellation_events),
         latest_event_at_utc=_latest_event_at_utc(entry),
         ledger_summary=_ledger_summary(entry),
         ownership_summary=user_workflow["ownership_summary"],
@@ -386,6 +394,10 @@ def _run_summary(entry: LedgerEntry) -> RunSummary:
         readiness_summary=user_workflow["readiness_summary"],
         consent_summary=user_workflow["consent_summary"],
         allowed_user_owned_actions=user_workflow["allowed_user_owned_actions"],
+        governance_summary=governance.run_summary(entry.run_id) if governance is not None else None,
+        separation_of_duties_summary=(
+            governance.separation_of_duties_run_summary(entry.run_id) if governance is not None else None
+        ),
     )
 
 

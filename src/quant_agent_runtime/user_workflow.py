@@ -5,6 +5,7 @@ from typing import Any
 from uuid import uuid4
 
 from quant_agent_runtime.capability_discovery import SUPPORTED_EXECUTION_CAPABILITIES
+from quant_agent_runtime.governance import current_governance_actor
 from quant_agent_runtime.ledger import InMemoryLedger
 from quant_agent_runtime.models import (
     LedgerEntry,
@@ -185,6 +186,7 @@ class UserWorkflowService:
             "plan_id": plan_id,
             "plan_review_id": request.plan_review_id,
             "approved_by": "local_user",
+            "governance_actor": current_governance_actor(),
             "approved_at_utc": approved_at,
             "execution_permitted": False,
         }
@@ -275,6 +277,18 @@ class UserWorkflowService:
                 "The recorded run does not include explicit user-owned lifecycle ownership markers.",
             )
 
+        run_state = run_state_for_entry(entry)
+        if run_state == "paused":
+            raise _rejected(
+                "paused_run_user_workflow_consent",
+                "The recorded run is paused and must be resumed before recording user-owned consent.",
+            )
+        if run_state in TERMINAL_OR_CANCELLED_STATES:
+            raise _rejected(
+                "terminal_run_user_workflow_consent",
+                "The recorded run is terminal or cancelled and cannot record user-owned consent.",
+            )
+
         readiness = latest_readiness_summary(entry)
         if readiness.status != "ready":
             raise _rejected(
@@ -286,13 +300,6 @@ class UserWorkflowService:
             raise _rejected(
                 "user_plan_approval_required",
                 "The active user-owned plan must be reviewed and approved before workflow consent.",
-            )
-
-        run_state = run_state_for_entry(entry)
-        if run_state in TERMINAL_OR_CANCELLED_STATES:
-            raise _rejected(
-                "terminal_run_user_workflow_consent",
-                "The recorded run is terminal or cancelled and cannot record user-owned consent.",
             )
 
         existing = latest_consent_summary(entry)
@@ -323,6 +330,7 @@ class UserWorkflowService:
             "allowed_execution_capabilities": readiness.allowed_execution_capabilities,
             "allowed_preflight_capabilities": readiness.allowed_preflight_capabilities,
             "consented_by": "local_user",
+            "governance_actor": current_governance_actor(),
             "consented_at_utc": consented_at,
             "execution_permitted": False,
         }
@@ -739,6 +747,8 @@ def _readiness_summary(
         )
     if ownership.ownership != "user_owned":
         blockers.append("The run ownership could not be classified as user-owned.")
+    if run_state == "paused":
+        blockers.append("Paused runs must be resumed before checking user-owned workflow readiness.")
     if run_state in TERMINAL_OR_CANCELLED_STATES:
         blockers.append("Terminal, cancelled, or reset runs cannot start user-owned guided workflow gates.")
     if not isinstance(entry.plan_snapshot, dict) or not entry.plan_snapshot.get("plan_id"):

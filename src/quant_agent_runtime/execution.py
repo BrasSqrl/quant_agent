@@ -11,6 +11,7 @@ from quant_agent_runtime.capability_discovery import (
     SUPPORTED_EXECUTION_CAPABILITIES,
 )
 from quant_agent_runtime.contracts import QuantSuiteContractLoader
+from quant_agent_runtime.governance import current_governance_actor
 from quant_agent_runtime.ledger import InMemoryLedger
 from quant_agent_runtime.models import (
     ExecutionRequest,
@@ -129,6 +130,7 @@ class ExecutionService:
         ensure_step_action_allowed(entry, request.step_id, "execute_step")
 
         action_request = _execution_action_request(preview_request)
+        action_request["governance_actor"] = current_governance_actor()
         self._validate_action_request(action_request, request.step_id, capability_id)
 
         try:
@@ -153,6 +155,7 @@ class ExecutionService:
                 error_message="The owning execution app could not complete the requested draft action.",
                 retry_allowed=True,
             )
+        action_result["governance_actor"] = current_governance_actor()
 
         try:
             self._validate_action_result(action_result, step)
@@ -164,6 +167,7 @@ class ExecutionService:
                 error_message="The owning execution app returned a result that could not be safely accepted.",
                 retry_allowed=False,
             )
+            action_result["governance_actor"] = current_governance_actor()
             self._validate_action_result(action_result, step)
 
         try:

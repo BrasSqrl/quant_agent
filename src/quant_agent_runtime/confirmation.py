@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+from quant_agent_runtime.governance import current_governance_actor
 from quant_agent_runtime.ledger import InMemoryLedger
 from quant_agent_runtime.models import (
     ConfirmationRequest,
@@ -143,6 +144,7 @@ class ConfirmationService:
             "reason": reason,
             "confirmation_intent": CONFIRMATION_INTENT_APPROVE_PLAN_STEP,
             "confirmed_by": "local_user",
+            "governance_actor": current_governance_actor(),
             "confirmed_at_utc": _utc_now_label(),
             "execution_permitted": False,
         }

@@ -14,6 +14,7 @@ from quant_agent_runtime.execution import (
     _latest_execution_action_request,
     _plan_step,
 )
+from quant_agent_runtime.governance import current_governance_actor
 from quant_agent_runtime.ledger import InMemoryLedger
 from quant_agent_runtime.models import (
     LedgerEntry,
@@ -147,6 +148,7 @@ class RetryService:
             failed_action_run_id=str(failed_result.get("action_run_id") or ""),
             retry_intent=request.retry_intent,
         )
+        action_request["governance_actor"] = current_governance_actor()
         self._execution._validate_action_request(action_request, request.step_id, capability_id)
 
         try:
@@ -171,6 +173,7 @@ class RetryService:
                 error_message="The owning execution app could not complete the retry attempt.",
                 retry_allowed=False,
             )
+        action_result["governance_actor"] = current_governance_actor()
 
         try:
             self._execution._validate_action_result(action_result, step)
@@ -182,6 +185,7 @@ class RetryService:
                 error_message="The owning execution app returned a retry result that could not be safely accepted.",
                 retry_allowed=False,
             )
+            action_result["governance_actor"] = current_governance_actor()
             self._execution._validate_action_result(action_result, step)
 
         retry_event = _retry_event(
@@ -282,6 +286,7 @@ def _retry_event(
         "retry_action_run_id": action_result.get("action_run_id"),
         "retry_execution_status": action_result.get("execution_status"),
         "retried_by": "local_user",
+        "governance_actor": current_governance_actor(),
         "retried_at_utc": _utc_now_label(),
         "execution_permitted": False,
     }

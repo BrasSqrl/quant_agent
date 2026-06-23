@@ -356,6 +356,41 @@ class StaleAssumptionSummary(StrictModel):
     checked_at_utc: str | None = None
 
 
+class GovernanceSummary(StrictModel):
+    support_level: str = "not_available"
+    policy_pack_id: str
+    environment: str
+    actor_id: str | None = None
+    actor_role: str
+    effective_actor_role: str
+    source: str
+    fallback_active: bool = False
+    fallback_reason: str | None = None
+    allowed_routes: list[str] = Field(default_factory=list)
+    denied_routes: list[str] = Field(default_factory=list)
+    allowed_capability_ids: list[str] = Field(default_factory=list)
+    denied_capability_ids: list[str] = Field(default_factory=list)
+    diagnostics: list[dict[str, Any]] = Field(default_factory=list)
+    run_id: str | None = None
+
+
+class SeparationOfDutiesSummary(StrictModel):
+    support_level: str = "not_available"
+    run_id: str | None = None
+    actor_id: str
+    actor_role: str
+    effective_actor_role: str
+    actor_exempt: bool = False
+    active_rule_ids: list[str] = Field(default_factory=list)
+    exempt_roles: list[str] = Field(default_factory=list)
+    protected_routes: list[str] = Field(default_factory=list)
+    blocked_routes: list[str] = Field(default_factory=list)
+    blocked: bool = False
+    blocker_reason: str | None = None
+    latest_denial: dict[str, Any] | None = None
+    diagnostics: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class RunStatusResult(StrictModel):
     run_id: str
     parent_run_id: str | None = None
@@ -382,6 +417,8 @@ class RunStatusResult(StrictModel):
     consent_summary: UserWorkflowConsentSummary | None = None
     allowed_user_owned_actions: list[str] = Field(default_factory=list)
     allowed_next_actions: list[str] = Field(default_factory=list)
+    governance_summary: GovernanceSummary | None = None
+    separation_of_duties_summary: SeparationOfDutiesSummary | None = None
     validation: PlanValidationResult
 
 
@@ -398,6 +435,8 @@ class RunSummary(StrictModel):
     app_ids: list[str] = Field(default_factory=list)
     capability_ids: list[str] = Field(default_factory=list)
     latest_action_result: dict[str, Any] | None = None
+    latest_recovery: dict[str, Any] | None = None
+    latest_cancellation: dict[str, Any] | None = None
     latest_event_at_utc: str | None = None
     ledger_summary: dict[str, Any]
     ownership_summary: UserWorkflowOwnershipSummary | None = None
@@ -406,6 +445,8 @@ class RunSummary(StrictModel):
     readiness_summary: UserWorkflowReadinessSummary | None = None
     consent_summary: UserWorkflowConsentSummary | None = None
     allowed_user_owned_actions: list[str] = Field(default_factory=list)
+    governance_summary: GovernanceSummary | None = None
+    separation_of_duties_summary: SeparationOfDutiesSummary | None = None
 
 
 class RunListResult(StrictModel):
@@ -455,6 +496,8 @@ class RunOrchestrationResult(StrictModel):
     readiness_summary: UserWorkflowReadinessSummary | None = None
     consent_summary: UserWorkflowConsentSummary | None = None
     allowed_user_owned_actions: list[str] = Field(default_factory=list)
+    governance_summary: GovernanceSummary | None = None
+    separation_of_duties_summary: SeparationOfDutiesSummary | None = None
     validation: PlanValidationResult
 
 
@@ -917,6 +960,8 @@ class RuntimeManifest(StrictModel):
     autopilot_support_level: str = "not_available"
     sample_reset_support_level: str = "not_available"
     demo_narrative_support_level: str = "not_available"
+    governance_support_level: str = "not_available"
+    separation_of_duties_support_level: str = "not_available"
     plan_only_support_level: str
     execution_support_level: str
     redaction_support_level: str
@@ -926,4 +971,6 @@ class RuntimeManifest(StrictModel):
     loaded_agent_contracts: list[str]
     temporary_internal_contract_fixtures: bool
     provider_status: ProviderRuntimeStatus
+    governance_summary: GovernanceSummary | None = None
+    separation_of_duties_summary: SeparationOfDutiesSummary | None = None
     safety_boundaries: list[str]
