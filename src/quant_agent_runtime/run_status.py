@@ -27,6 +27,7 @@ from quant_agent_runtime.orchestration import (
 )
 from quant_agent_runtime.redaction import find_unsafe_payload_issues
 from quant_agent_runtime.run_state import run_state_for_entry
+from quant_agent_runtime.user_workflow import user_workflow_summaries_for_entry
 from quant_agent_runtime.validation.errors import RuntimeValidationError
 
 
@@ -330,6 +331,7 @@ class RunStatusService:
 
 def _status_result(entry: LedgerEntry) -> RunStatusResult:
     orchestration = orchestration_for_entry(entry)
+    user_workflow = user_workflow_summaries_for_entry(entry, run_state=orchestration.run_state)
     return RunStatusResult(
         run_id=entry.run_id,
         parent_run_id=entry.parent_run_id,
@@ -349,19 +351,27 @@ def _status_result(entry: LedgerEntry) -> RunStatusResult:
         ledger_summary=_ledger_summary(entry),
         run_progress_summary=orchestration.run_progress_summary,
         stale_assumption_summary=orchestration.stale_assumption_summary,
+        ownership_summary=user_workflow["ownership_summary"],
+        plan_review_summary=user_workflow["plan_review_summary"],
+        plan_approval_summary=user_workflow["plan_approval_summary"],
+        readiness_summary=user_workflow["readiness_summary"],
+        consent_summary=user_workflow["consent_summary"],
+        allowed_user_owned_actions=user_workflow["allowed_user_owned_actions"],
         allowed_next_actions=orchestration.allowed_next_actions,
         validation=PlanValidationResult(status="valid"),
     )
 
 
 def _run_summary(entry: LedgerEntry) -> RunSummary:
+    run_state = run_state_for_entry(entry)
+    user_workflow = user_workflow_summaries_for_entry(entry, run_state=run_state)
     return RunSummary(
         run_id=entry.run_id,
         parent_run_id=entry.parent_run_id,
         parent_plan_id=entry.parent_plan_id,
         activated_revision_id=entry.activated_revision_id,
         child_run_ids=entry.child_run_ids,
-        run_state=run_state_for_entry(entry),
+        run_state=run_state,
         final_status=entry.final_status,
         user_goal_summary=entry.user_goal_summary,
         lifecycle_id=_lifecycle_id(entry),
@@ -370,6 +380,12 @@ def _run_summary(entry: LedgerEntry) -> RunSummary:
         latest_action_result=_latest(entry.action_results),
         latest_event_at_utc=_latest_event_at_utc(entry),
         ledger_summary=_ledger_summary(entry),
+        ownership_summary=user_workflow["ownership_summary"],
+        plan_review_summary=user_workflow["plan_review_summary"],
+        plan_approval_summary=user_workflow["plan_approval_summary"],
+        readiness_summary=user_workflow["readiness_summary"],
+        consent_summary=user_workflow["consent_summary"],
+        allowed_user_owned_actions=user_workflow["allowed_user_owned_actions"],
     )
 
 

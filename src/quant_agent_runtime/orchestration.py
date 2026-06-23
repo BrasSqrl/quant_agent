@@ -90,6 +90,9 @@ def orchestration_for_entry(entry: LedgerEntry) -> RunOrchestrationResult:
         steps=summaries,
         allowed_next_actions=allowed_next_actions,
     )
+    from quant_agent_runtime.user_workflow import user_workflow_summaries_for_entry
+
+    user_workflow = user_workflow_summaries_for_entry(entry, run_state=run_state)
     return RunOrchestrationResult(
         run_id=entry.run_id,
         parent_run_id=entry.parent_run_id,
@@ -105,6 +108,12 @@ def orchestration_for_entry(entry: LedgerEntry) -> RunOrchestrationResult:
         ledger_summary=ledger_summary(entry),
         run_progress_summary=progress_summary,
         stale_assumption_summary=latest_stale_assumption_summary(entry),
+        ownership_summary=user_workflow["ownership_summary"],
+        plan_review_summary=user_workflow["plan_review_summary"],
+        plan_approval_summary=user_workflow["plan_approval_summary"],
+        readiness_summary=user_workflow["readiness_summary"],
+        consent_summary=user_workflow["consent_summary"],
+        allowed_user_owned_actions=user_workflow["allowed_user_owned_actions"],
         validation=PlanValidationResult(status="valid"),
     )
 

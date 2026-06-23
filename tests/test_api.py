@@ -601,6 +601,52 @@ def _check_user_owned_readiness(client: TestClient, plan_payload: dict[str, Any]
     return response.json()
 
 
+def _review_user_plan(
+    client: TestClient,
+    plan_payload: dict[str, Any],
+    *,
+    decision: str = "accept",
+    safe_note: str | None = None,
+) -> dict[str, Any]:
+    assumptions = plan_payload["plan"].get("assumptions", [])
+    response = client.post(
+        "/user-plan-reviews",
+        json={
+            "run_id": plan_payload["run_id"],
+            "review_intent": "review_plan_assumptions",
+            "assumption_reviews": [
+                {
+                    "assumption_index": index,
+                    "decision": decision,
+                    **({"safe_note": safe_note or "Revise this assumption before approval."} if decision == "revise" else {}),
+                }
+                for index, _assumption in enumerate(assumptions)
+            ],
+            "current_context_summary": _safe_user_owned_lifecycle_context(),
+        },
+    )
+    assert response.status_code == 200
+    return response.json()
+
+
+def _approve_user_plan(
+    client: TestClient,
+    plan_payload: dict[str, Any],
+    review_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    review_payload = review_payload or _review_user_plan(client, plan_payload)
+    response = client.post(
+        "/user-plan-approvals",
+        json={
+            "run_id": plan_payload["run_id"],
+            "approval_intent": "approve_user_plan",
+            "plan_review_id": review_payload["plan_review_summary"]["plan_review_id"],
+        },
+    )
+    assert response.status_code == 200
+    return response.json()
+
+
 def _approve_user_owned_consent(client: TestClient, plan_payload: dict[str, Any]) -> dict[str, Any]:
     response = client.post(
         "/user-workflow-consents",
@@ -906,6 +952,8 @@ def test_runtime_manifest_returns_supported_modes() -> None:
     assert "POST /sample-reset-previews" in manifest["supported_routes"]
     assert "POST /sample-resets" in manifest["supported_routes"]
     assert "GET /runs/{run_id}/demo-narrative" in manifest["supported_routes"]
+    assert "POST /user-plan-reviews" in manifest["supported_routes"]
+    assert "POST /user-plan-approvals" in manifest["supported_routes"]
     assert "POST /user-workflow-readiness" in manifest["supported_routes"]
     assert "POST /user-workflow-consents" in manifest["supported_routes"]
     assert manifest["runtime_health_endpoint"] == "/health"
@@ -921,6 +969,7 @@ def test_runtime_manifest_returns_supported_modes() -> None:
     assert manifest["sample_reset_support_level"] == "sample_owned_studio_orchestrated_only"
     assert manifest["demo_narrative_support_level"] == "sample_owned_ledger_narrative_only"
     assert manifest["user_workflow_support_level"] == "manual_user_owned_consent_gate_only"
+    assert manifest["user_plan_approval_support_level"] == "manual_active_plan_approval_only"
     assert manifest["ledger_storage"]["storage_mode"] == "memory"
     assert manifest["provider_status"]["supports_execution"] is False
     assert manifest["provider_status"]["hosted_provider_enabled"] is False
@@ -970,6 +1019,13 @@ def test_user_owned_readiness_and_consent_gate_gated_actions() -> None:
         "user_workflow_readiness_required"
     )
     assert app_client.calls == []
+    initial_status = client.get(f"/runs/{plan_payload['run_id']}").json()
+    assert initial_status["ownership_summary"]["ownership"] == "user_owned"
+    assert initial_status["plan_review_summary"]["status"] == "not_reviewed"
+    assert initial_status["plan_approval_summary"]["status"] == "not_approved"
+    assert initial_status["readiness_summary"]["status"] == "not_checked"
+    assert initial_status["consent_summary"]["status"] == "not_recorded"
+    assert initial_status["allowed_user_owned_actions"] == ["check_user_owned_readiness"]
 
     readiness = _check_user_owned_readiness(client, plan_payload)
     assert readiness["ownership_summary"]["ownership"] == "user_owned"
@@ -977,6 +1033,49 @@ def test_user_owned_readiness_and_consent_gate_gated_actions() -> None:
     assert readiness["readiness_summary"]["consent_required"] is True
     assert "quant_data.run_source_preflight" in readiness["readiness_summary"]["allowed_preflight_capabilities"]
     assert "quant_studio.prepare_model_config_draft" in readiness["readiness_summary"]["allowed_execution_capabilities"]
+    status_after_readiness = client.get(f"/runs/{plan_payload['run_id']}").json()
+    assert status_after_readiness["readiness_summary"]["status"] == "ready"
+    assert status_after_readiness["consent_summary"]["status"] == "not_recorded"
+    assert status_after_readiness["allowed_user_owned_actions"] == [
+        "review_plan_assumptions"
+    ]
+
+    blocked_after_readiness = client.post(
+        "/preflights",
+        json={"run_id": plan_payload["run_id"], "step_id": source_step["step_id"]},
+    )
+    assert blocked_after_readiness.status_code == 422
+    assert blocked_after_readiness.json()["detail"]["errors"][0]["code"] == (
+        "user_plan_approval_required"
+    )
+    blocked_consent = client.post(
+        "/user-workflow-consents",
+        json={
+            "run_id": plan_payload["run_id"],
+            "consent_intent": "approve_user_owned_guided_execution",
+            "consent_scope": "single_run_review_draft_actions",
+        },
+    )
+    assert blocked_consent.status_code == 422
+    assert blocked_consent.json()["detail"]["errors"][0]["code"] == (
+        "user_plan_approval_required"
+    )
+
+    review = _review_user_plan(client, plan_payload)
+    assert review["plan_review_summary"]["status"] == "reviewed"
+    assert review["plan_review_summary"]["accepted_assumption_count"] == len(
+        plan_payload["plan"]["assumptions"]
+    )
+    status_after_review = client.get(f"/runs/{plan_payload['run_id']}").json()
+    assert status_after_review["allowed_user_owned_actions"] == ["approve_user_plan"]
+    approval = _approve_user_plan(client, plan_payload, review)
+    assert approval["plan_approval_summary"]["status"] == "approved"
+    status_after_approval = client.get(f"/runs/{plan_payload['run_id']}").json()
+    assert status_after_approval["plan_review_summary"]["status"] == "reviewed"
+    assert status_after_approval["plan_approval_summary"]["status"] == "approved"
+    assert status_after_approval["allowed_user_owned_actions"] == [
+        "approve_user_owned_guided_execution"
+    ]
 
     preflight = client.post(
         "/preflights",
@@ -1002,6 +1101,22 @@ def test_user_owned_readiness_and_consent_gate_gated_actions() -> None:
     assert consent["consent_summary"]["status"] == "consented"
     assert consent["consent_summary"]["consent_scope"] == "single_run_review_draft_actions"
     assert consent["consent_summary"]["execution_permitted"] is False
+    status_after_consent = client.get(f"/runs/{plan_payload['run_id']}").json()
+    assert status_after_consent["ownership_summary"]["ownership"] == "user_owned"
+    assert status_after_consent["plan_review_summary"]["status"] == "reviewed"
+    assert status_after_consent["plan_approval_summary"]["status"] == "approved"
+    assert status_after_consent["readiness_summary"]["status"] == "ready"
+    assert status_after_consent["consent_summary"]["status"] == "consented"
+    assert "run_preflight" in status_after_consent["allowed_user_owned_actions"]
+    assert "execute_step" in status_after_consent["allowed_user_owned_actions"]
+    orchestration_after_consent = client.get(
+        f"/runs/{plan_payload['run_id']}/orchestration"
+    ).json()
+    assert orchestration_after_consent["ownership_summary"]["ownership"] == "user_owned"
+    assert orchestration_after_consent["plan_review_summary"]["status"] == "reviewed"
+    assert orchestration_after_consent["plan_approval_summary"]["status"] == "approved"
+    assert orchestration_after_consent["readiness_summary"]["status"] == "ready"
+    assert orchestration_after_consent["consent_summary"]["status"] == "consented"
 
     confirmation = client.post(
         "/confirmations",
@@ -1025,13 +1140,241 @@ def test_user_owned_readiness_and_consent_gate_gated_actions() -> None:
     assert len(app_client.execution_calls) == 1
 
     entry = runtime.planner.ledger.list_entries()[0]
-    assert [event["event_type"] for event in entry.recovery_events[:2]] == [
+    assert [event["event_type"] for event in entry.recovery_events[:4]] == [
         "user_workflow_readiness",
+        "user_plan_review",
+        "user_plan_approval",
         "user_workflow_consent",
     ]
     runtime.contract_loader.validate_agent_contract_payload(
         entry.model_dump(mode="json"),
         "agent_execution_ledger.v1.schema.json",
+    )
+    listed = client.get("/runs").json()["runs"][0]
+    assert listed["run_id"] == plan_payload["run_id"]
+    assert listed["ownership_summary"]["ownership"] == "user_owned"
+    assert listed["plan_review_summary"]["status"] == "reviewed"
+    assert listed["plan_approval_summary"]["status"] == "approved"
+    assert listed["readiness_summary"]["status"] == "ready"
+    assert listed["consent_summary"]["status"] == "consented"
+
+
+def test_full_user_owned_guided_draft_path_and_refreshed_gate_state() -> None:
+    app_client = FakePreflightAppClient(
+        responses_by_capability={
+            "quant_monitoring.validate_bundle": _valid_preflight_response(
+                capability_id="quant_monitoring.validate_bundle",
+                app_id="quant_monitoring",
+            )
+        }
+    )
+    runtime = runtime_with_preflight_client(app_client)
+    client = TestClient(create_app(runtime))
+    plan_payload = _create_user_owned_plan(client)
+
+    _check_user_owned_readiness(client, plan_payload)
+    _approve_user_plan(client, plan_payload)
+    _approve_user_owned_consent(client, plan_payload)
+    _run_source_preflight(client, plan_payload)
+    _complete_studio_step(client, plan_payload)
+    _complete_documentation_step(client, plan_payload)
+    monitoring_preflight = _run_monitoring_preflight(client, plan_payload)
+
+    assert monitoring_preflight["capability_id"] == "quant_monitoring.validate_bundle"
+    assert [call["capability_id"] for call in app_client.calls] == [
+        "quant_data.run_source_preflight",
+        "quant_monitoring.validate_bundle",
+    ]
+    assert [call["capability_id"] for call in app_client.execution_calls] == [
+        "quant_studio.prepare_model_config_draft",
+        "quant_documentation.create_draft_workspace",
+    ]
+
+    status = client.get(f"/runs/{plan_payload['run_id']}").json()
+    orchestration = client.get(f"/runs/{plan_payload['run_id']}/orchestration").json()
+    assert status["run_state"] in {"completed", "completed_with_warnings"}
+    assert status["ownership_summary"]["ownership"] == "user_owned"
+    assert status["plan_review_summary"]["status"] == "reviewed"
+    assert status["plan_approval_summary"]["status"] == "approved"
+    assert status["readiness_summary"]["status"] == "ready"
+    assert status["consent_summary"]["status"] == "consented"
+    assert orchestration["ownership_summary"]["ownership"] == "user_owned"
+    assert orchestration["plan_review_summary"]["status"] == "reviewed"
+    assert orchestration["plan_approval_summary"]["status"] == "approved"
+    assert orchestration["readiness_summary"]["status"] == "ready"
+    assert orchestration["consent_summary"]["status"] == "consented"
+    assert orchestration["ledger_summary"]["preflight_count"] == 2
+    assert orchestration["ledger_summary"]["action_result_count"] == 2
+
+    entry = runtime.planner.ledger.get(plan_payload["run_id"])
+    assert entry is not None
+    assert [event["event_type"] for event in entry.recovery_events[:4]] == [
+        "user_workflow_readiness",
+        "user_plan_review",
+        "user_plan_approval",
+        "user_workflow_consent",
+    ]
+    runtime.contract_loader.validate_agent_contract_payload(
+        entry.model_dump(mode="json"),
+        "agent_execution_ledger.v1.schema.json",
+    )
+
+
+def test_user_owned_gate_summaries_survive_durable_ledger_reload(tmp_path: Path) -> None:
+    loader = QuantSuiteContractLoader(QUANT_SUITE_ROOT)
+    first_ledger = FileBackedLedger(
+        tmp_path,
+        validate_contract=loader.validate_agent_contract_payload,
+    )
+    first_runtime = runtime_with_preflight_client(
+        FakePreflightAppClient(),
+        ledger=first_ledger,
+    )
+    first_client = TestClient(create_app(first_runtime))
+    plan_payload = _create_user_owned_plan(first_client)
+    _check_user_owned_readiness(first_client, plan_payload)
+    _approve_user_plan(first_client, plan_payload)
+    _approve_user_owned_consent(first_client, plan_payload)
+
+    second_ledger = FileBackedLedger(
+        tmp_path,
+        validate_contract=loader.validate_agent_contract_payload,
+    )
+    second_runtime = runtime_with_preflight_client(
+        FakePreflightAppClient(),
+        ledger=second_ledger,
+    )
+    second_client = TestClient(create_app(second_runtime))
+
+    status = second_client.get(f"/runs/{plan_payload['run_id']}")
+    orchestration = second_client.get(f"/runs/{plan_payload['run_id']}/orchestration")
+    listed = second_client.get("/runs")
+
+    assert status.status_code == 200
+    assert orchestration.status_code == 200
+    assert listed.status_code == 200
+    assert status.json()["ownership_summary"]["ownership"] == "user_owned"
+    assert status.json()["plan_review_summary"]["status"] == "reviewed"
+    assert status.json()["plan_approval_summary"]["status"] == "approved"
+    assert status.json()["readiness_summary"]["status"] == "ready"
+    assert status.json()["consent_summary"]["status"] == "consented"
+    assert orchestration.json()["ownership_summary"]["ownership"] == "user_owned"
+    assert orchestration.json()["plan_review_summary"]["status"] == "reviewed"
+    assert orchestration.json()["plan_approval_summary"]["status"] == "approved"
+    assert orchestration.json()["readiness_summary"]["status"] == "ready"
+    assert orchestration.json()["consent_summary"]["status"] == "consented"
+    assert listed.json()["runs"][0]["ownership_summary"]["ownership"] == "user_owned"
+    assert listed.json()["runs"][0]["plan_review_summary"]["status"] == "reviewed"
+    assert listed.json()["runs"][0]["plan_approval_summary"]["status"] == "approved"
+    assert listed.json()["runs"][0]["readiness_summary"]["status"] == "ready"
+    assert listed.json()["runs"][0]["consent_summary"]["status"] == "consented"
+
+
+def test_user_plan_review_and_approval_validate_assumptions_and_block_revisions() -> None:
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
+    plan_payload = _create_user_owned_plan(client)
+    run_id = plan_payload["run_id"]
+
+    missing = client.post(
+        "/user-plan-reviews",
+        json={
+            "run_id": run_id,
+            "review_intent": "review_plan_assumptions",
+            "assumption_reviews": [{"assumption_index": 0, "decision": "accept"}],
+            "current_context_summary": _safe_user_owned_lifecycle_context(),
+        },
+    )
+    assert missing.status_code == 422
+    assert missing.json()["detail"]["errors"][0]["code"] == "user_plan_assumption_review_count_mismatch"
+
+    duplicate = client.post(
+        "/user-plan-reviews",
+        json={
+            "run_id": run_id,
+            "review_intent": "review_plan_assumptions",
+            "assumption_reviews": [
+                {"assumption_index": 0, "decision": "accept"},
+                {"assumption_index": 0, "decision": "accept"},
+            ],
+            "current_context_summary": _safe_user_owned_lifecycle_context(),
+        },
+    )
+    assert duplicate.status_code == 422
+    assert duplicate.json()["detail"]["errors"][0]["code"] == "duplicate_user_plan_assumption_review"
+
+    out_of_range = client.post(
+        "/user-plan-reviews",
+        json={
+            "run_id": run_id,
+            "review_intent": "review_plan_assumptions",
+            "assumption_reviews": [
+                {"assumption_index": 0, "decision": "accept"},
+                {"assumption_index": 99, "decision": "accept"},
+            ],
+            "current_context_summary": _safe_user_owned_lifecycle_context(),
+        },
+    )
+    assert out_of_range.status_code == 422
+    assert out_of_range.json()["detail"]["errors"][0]["code"] == "invalid_user_plan_assumption_review_index"
+
+    unsafe = client.post(
+        "/user-plan-reviews",
+        json={
+            "run_id": run_id,
+            "review_intent": "review_plan_assumptions",
+            "assumption_reviews": [
+                {"assumption_index": 0, "decision": "accept"},
+                {
+                    "assumption_index": 1,
+                    "decision": "revise",
+                    "safe_note": "Check C:\\private\\raw.csv before approval.",
+                },
+            ],
+            "current_context_summary": _safe_user_owned_lifecycle_context(),
+        },
+    )
+    assert unsafe.status_code == 422
+    assert unsafe.json()["detail"]["errors"][0]["code"] == "unsafe_user_plan_review_record"
+    assert "raw.csv" not in unsafe.text
+
+    extra = client.post(
+        "/user-plan-reviews",
+        json={
+            "run_id": run_id,
+            "review_intent": "review_plan_assumptions",
+            "assumption_reviews": [
+                {"assumption_index": 0, "decision": "accept"},
+                {"assumption_index": 1, "decision": "accept", "execution_permitted": True},
+            ],
+            "current_context_summary": _safe_user_owned_lifecycle_context(),
+        },
+    )
+    assert extra.status_code == 422
+
+    revision_review = _review_user_plan(
+        client,
+        plan_payload,
+        decision="revise",
+        safe_note="Revise this assumption using only safe summary evidence.",
+    )
+    assert revision_review["plan_review_summary"]["status"] == "revision_requested"
+    blocked_approval = client.post(
+        "/user-plan-approvals",
+        json={
+            "run_id": run_id,
+            "approval_intent": "approve_user_plan",
+            "plan_review_id": revision_review["plan_review_summary"]["plan_review_id"],
+        },
+    )
+    assert blocked_approval.status_code == 422
+    assert blocked_approval.json()["detail"]["errors"][0]["code"] == "user_plan_revision_requested"
+
+    accepted_review = _review_user_plan(client, plan_payload)
+    approval = _approve_user_plan(client, plan_payload, accepted_review)
+    assert approval["plan_approval_summary"]["status"] == "approved"
+    duplicate_approval = _approve_user_plan(client, plan_payload, accepted_review)
+    assert duplicate_approval["plan_approval_summary"]["plan_approval_id"] == (
+        approval["plan_approval_summary"]["plan_approval_id"]
     )
 
 
@@ -1110,7 +1453,21 @@ def test_sample_owned_runs_do_not_require_user_workflow_gate_and_cannot_use_user
     )
     assert readiness.status_code == 200
     assert readiness.json()["ownership_summary"]["ownership"] == "sample_owned"
+    assert readiness.json()["plan_review_summary"]["status"] == "not_required"
+    assert readiness.json()["plan_approval_summary"]["status"] == "not_required"
     assert readiness.json()["readiness_summary"]["status"] == "sample_owned"
+
+    sample_review = client.post(
+        "/user-plan-reviews",
+        json={
+            "run_id": sample_plan["run_id"],
+            "review_intent": "review_plan_assumptions",
+            "assumption_reviews": [],
+            "current_context_summary": _safe_sample_lifecycle_context(),
+        },
+    )
+    assert sample_review.status_code == 422
+    assert sample_review.json()["detail"]["errors"][0]["code"] == "sample_plan_approval_not_required"
 
     consent = client.post(
         "/user-workflow-consents",

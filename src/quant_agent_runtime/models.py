@@ -375,6 +375,12 @@ class RunStatusResult(StrictModel):
     ledger_summary: dict[str, Any]
     run_progress_summary: RunProgressSummary
     stale_assumption_summary: StaleAssumptionSummary
+    ownership_summary: UserWorkflowOwnershipSummary | None = None
+    plan_review_summary: UserPlanReviewSummary | None = None
+    plan_approval_summary: UserPlanApprovalSummary | None = None
+    readiness_summary: UserWorkflowReadinessSummary | None = None
+    consent_summary: UserWorkflowConsentSummary | None = None
+    allowed_user_owned_actions: list[str] = Field(default_factory=list)
     allowed_next_actions: list[str] = Field(default_factory=list)
     validation: PlanValidationResult
 
@@ -394,6 +400,12 @@ class RunSummary(StrictModel):
     latest_action_result: dict[str, Any] | None = None
     latest_event_at_utc: str | None = None
     ledger_summary: dict[str, Any]
+    ownership_summary: UserWorkflowOwnershipSummary | None = None
+    plan_review_summary: UserPlanReviewSummary | None = None
+    plan_approval_summary: UserPlanApprovalSummary | None = None
+    readiness_summary: UserWorkflowReadinessSummary | None = None
+    consent_summary: UserWorkflowConsentSummary | None = None
+    allowed_user_owned_actions: list[str] = Field(default_factory=list)
 
 
 class RunListResult(StrictModel):
@@ -437,6 +449,12 @@ class RunOrchestrationResult(StrictModel):
     ledger_summary: dict[str, Any]
     run_progress_summary: RunProgressSummary
     stale_assumption_summary: StaleAssumptionSummary
+    ownership_summary: UserWorkflowOwnershipSummary | None = None
+    plan_review_summary: UserPlanReviewSummary | None = None
+    plan_approval_summary: UserPlanApprovalSummary | None = None
+    readiness_summary: UserWorkflowReadinessSummary | None = None
+    consent_summary: UserWorkflowConsentSummary | None = None
+    allowed_user_owned_actions: list[str] = Field(default_factory=list)
     validation: PlanValidationResult
 
 
@@ -589,6 +607,80 @@ class UserWorkflowConsentSummary(StrictModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class UserPlanAssumptionReview(StrictModel):
+    assumption_index: int = Field(ge=0)
+    decision: Literal["accept", "revise"]
+    safe_note: str | None = Field(default=None, max_length=500)
+
+
+class UserPlanReviewSummary(StrictModel):
+    status: Literal["not_required", "not_reviewed", "reviewed", "revision_requested", "blocked"] = "not_reviewed"
+    plan_review_id: str | None = None
+    plan_id: str | None = None
+    review_intent: str | None = None
+    total_assumption_count: int = 0
+    accepted_assumption_count: int = 0
+    revise_assumption_count: int = 0
+    revision_notes: list[dict[str, Any]] = Field(default_factory=list)
+    blockers: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    data_policy: Literal["summaries_and_references_only"] = "summaries_and_references_only"
+    reviewed_by: str | None = None
+    reviewed_at_utc: str | None = None
+
+
+class UserPlanApprovalSummary(StrictModel):
+    status: Literal["not_required", "not_approved", "approved", "blocked"] = "not_approved"
+    plan_approval_id: str | None = None
+    plan_review_id: str | None = None
+    plan_id: str | None = None
+    approval_intent: str | None = None
+    approved_by: str | None = None
+    approved_at_utc: str | None = None
+    execution_permitted: Literal[False] = False
+    blockers: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class UserPlanReviewRequest(StrictModel):
+    run_id: str = Field(min_length=1)
+    review_intent: Literal["review_plan_assumptions"]
+    assumption_reviews: list[UserPlanAssumptionReview]
+    current_context_summary: dict[str, Any] = Field(default_factory=dict)
+
+
+class UserPlanReviewResult(StrictModel):
+    run_id: str
+    ownership_summary: UserWorkflowOwnershipSummary
+    plan_review_summary: UserPlanReviewSummary
+    plan_approval_summary: UserPlanApprovalSummary
+    readiness_summary: UserWorkflowReadinessSummary
+    consent_summary: UserWorkflowConsentSummary
+    run_state: RunState
+    orchestration: RunOrchestrationResult
+    validation: PlanValidationResult
+    ledger_recorded: bool
+
+
+class UserPlanApprovalRequest(StrictModel):
+    run_id: str = Field(min_length=1)
+    approval_intent: Literal["approve_user_plan"]
+    plan_review_id: str = Field(min_length=1)
+
+
+class UserPlanApprovalResult(StrictModel):
+    run_id: str
+    ownership_summary: UserWorkflowOwnershipSummary
+    plan_review_summary: UserPlanReviewSummary
+    plan_approval_summary: UserPlanApprovalSummary
+    readiness_summary: UserWorkflowReadinessSummary
+    consent_summary: UserWorkflowConsentSummary
+    run_state: RunState
+    orchestration: RunOrchestrationResult
+    validation: PlanValidationResult
+    ledger_recorded: bool
+
+
 class UserWorkflowReadinessRequest(StrictModel):
     run_id: str = Field(min_length=1)
     readiness_intent: Literal["check_user_owned_readiness"]
@@ -598,6 +690,8 @@ class UserWorkflowReadinessRequest(StrictModel):
 class UserWorkflowReadinessResult(StrictModel):
     run_id: str
     ownership_summary: UserWorkflowOwnershipSummary
+    plan_review_summary: UserPlanReviewSummary
+    plan_approval_summary: UserPlanApprovalSummary
     readiness_summary: UserWorkflowReadinessSummary
     consent_summary: UserWorkflowConsentSummary
     run_state: RunState
@@ -615,6 +709,8 @@ class UserWorkflowConsentRequest(StrictModel):
 class UserWorkflowConsentResult(StrictModel):
     run_id: str
     ownership_summary: UserWorkflowOwnershipSummary
+    plan_review_summary: UserPlanReviewSummary
+    plan_approval_summary: UserPlanApprovalSummary
     readiness_summary: UserWorkflowReadinessSummary
     consent_summary: UserWorkflowConsentSummary
     run_state: RunState
@@ -817,6 +913,7 @@ class RuntimeManifest(StrictModel):
     plan_revision_activation_support_level: str = "not_available"
     revalidation_support_level: str = "not_available"
     user_workflow_support_level: str = "not_available"
+    user_plan_approval_support_level: str = "not_available"
     autopilot_support_level: str = "not_available"
     sample_reset_support_level: str = "not_available"
     demo_narrative_support_level: str = "not_available"

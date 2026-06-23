@@ -44,6 +44,10 @@ from quant_agent_runtime.models import (
     SampleResetPreviewResult,
     SampleResetRequest,
     SampleResetResult,
+    UserPlanApprovalRequest,
+    UserPlanApprovalResult,
+    UserPlanReviewRequest,
+    UserPlanReviewResult,
     UserWorkflowConsentRequest,
     UserWorkflowConsentResult,
     UserWorkflowReadinessRequest,
@@ -256,6 +260,20 @@ def create_app(runtime: RuntimeContainer | None = None) -> FastAPI:
     def reset_sample_demo(request: SampleResetRequest) -> SampleResetResult:
         try:
             return runtime_container.sample_reset.reset_sample(request)
+        except RuntimeValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
+
+    @api.post("/user-plan-reviews", response_model=UserPlanReviewResult)
+    def review_user_plan(request: UserPlanReviewRequest) -> UserPlanReviewResult:
+        try:
+            return runtime_container.user_workflow.review_plan(request)
+        except RuntimeValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
+
+    @api.post("/user-plan-approvals", response_model=UserPlanApprovalResult)
+    def approve_user_plan(request: UserPlanApprovalRequest) -> UserPlanApprovalResult:
+        try:
+            return runtime_container.user_workflow.approve_plan(request)
         except RuntimeValidationError as exc:
             raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
 
