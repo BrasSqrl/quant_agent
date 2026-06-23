@@ -9,6 +9,7 @@ from quant_agent_runtime.models import (
     CancellationRequest,
     CancellationResult,
     LedgerEntry,
+    LedgerIntegritySummary,
     PauseRequest,
     PauseResult,
     PlanValidationResult,
@@ -19,6 +20,7 @@ from quant_agent_runtime.models import (
     RunStatusResult,
     ValidationIssue,
 )
+from quant_agent_runtime.external_approval import external_approval_summary_for_entry
 from quant_agent_runtime.capability_discovery import CapabilityDiscoveryService
 from quant_agent_runtime.orchestration import (
     latest_recovery_event_type,
@@ -351,6 +353,10 @@ def _status_result(entry: LedgerEntry, *, governance: Any | None = None) -> RunS
         latest_recovery=_latest(entry.recovery_events),
         latest_cancellation=_latest(entry.cancellation_events),
         ledger_summary=_ledger_summary(entry),
+        external_approval_summary=external_approval_summary_for_entry(entry),
+        external_approval_enforcement_summary=(
+            governance.external_approval_enforcement_run_summary(entry.run_id) if governance is not None else None
+        ),
         run_progress_summary=orchestration.run_progress_summary,
         stale_assumption_summary=orchestration.stale_assumption_summary,
         ownership_summary=user_workflow["ownership_summary"],
@@ -364,6 +370,7 @@ def _status_result(entry: LedgerEntry, *, governance: Any | None = None) -> RunS
         separation_of_duties_summary=(
             governance.separation_of_duties_run_summary(entry.run_id) if governance is not None else None
         ),
+        ledger_integrity_summary=_ledger_integrity_summary(entry),
         validation=PlanValidationResult(status="valid"),
     )
 
@@ -388,6 +395,10 @@ def _run_summary(entry: LedgerEntry, *, governance: Any | None = None) -> RunSum
         latest_cancellation=_latest(entry.cancellation_events),
         latest_event_at_utc=_latest_event_at_utc(entry),
         ledger_summary=_ledger_summary(entry),
+        external_approval_summary=external_approval_summary_for_entry(entry),
+        external_approval_enforcement_summary=(
+            governance.external_approval_enforcement_run_summary(entry.run_id) if governance is not None else None
+        ),
         ownership_summary=user_workflow["ownership_summary"],
         plan_review_summary=user_workflow["plan_review_summary"],
         plan_approval_summary=user_workflow["plan_approval_summary"],
@@ -398,11 +409,26 @@ def _run_summary(entry: LedgerEntry, *, governance: Any | None = None) -> RunSum
         separation_of_duties_summary=(
             governance.separation_of_duties_run_summary(entry.run_id) if governance is not None else None
         ),
+        ledger_integrity_summary=_ledger_integrity_summary(entry),
     )
 
 
 def _ledger_summary(entry: LedgerEntry) -> dict[str, Any]:
     return ledger_summary(entry)
+
+
+def _ledger_integrity_summary(entry: LedgerEntry) -> LedgerIntegritySummary:
+    if entry.ledger_integrity is not None:
+        return LedgerIntegritySummary.model_validate(entry.ledger_integrity.model_dump(mode="json"))
+    return LedgerIntegritySummary(
+        status="not_available",
+        diagnostics=[
+            {
+                "code": "ledger_integrity_not_available",
+                "message": "The ledger entry does not include file-backed integrity metadata.",
+            }
+        ],
+    )
 
 
 def _lifecycle_id(entry: LedgerEntry) -> str | None:

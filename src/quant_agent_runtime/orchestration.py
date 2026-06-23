@@ -3,9 +3,11 @@ from __future__ import annotations
 from typing import Any
 
 from quant_agent_runtime.capability_discovery import SUPPORTED_EXECUTION_CAPABILITIES
+from quant_agent_runtime.external_approval import external_approval_summary_for_entry
 from quant_agent_runtime.ledger import InMemoryLedger
 from quant_agent_runtime.models import (
     LedgerEntry,
+    LedgerIntegritySummary,
     OrchestrationStepSummary,
     OrchestrationStepStatus,
     PlanValidationResult,
@@ -43,6 +45,9 @@ class OrchestrationService:
             update={
                 "governance_summary": self._governance.run_summary(entry.run_id),
                 "separation_of_duties_summary": self._governance.separation_of_duties_run_summary(entry.run_id),
+                "external_approval_enforcement_summary": (
+                    self._governance.external_approval_enforcement_run_summary(entry.run_id)
+                ),
             }
         )
 
@@ -115,6 +120,7 @@ def orchestration_for_entry(entry: LedgerEntry) -> RunOrchestrationResult:
         steps=summaries,
         allowed_next_actions=allowed_next_actions,
         ledger_summary=ledger_summary(entry),
+        external_approval_summary=external_approval_summary_for_entry(entry),
         run_progress_summary=progress_summary,
         stale_assumption_summary=latest_stale_assumption_summary(entry),
         ownership_summary=user_workflow["ownership_summary"],
@@ -123,6 +129,7 @@ def orchestration_for_entry(entry: LedgerEntry) -> RunOrchestrationResult:
         readiness_summary=user_workflow["readiness_summary"],
         consent_summary=user_workflow["consent_summary"],
         allowed_user_owned_actions=user_workflow["allowed_user_owned_actions"],
+        ledger_integrity_summary=_ledger_integrity_summary(entry),
         validation=PlanValidationResult(status="valid"),
     )
 
@@ -194,6 +201,20 @@ def ledger_summary(entry: LedgerEntry) -> dict[str, Any]:
         "safe_artifact_count": len(entry.safe_artifact_map),
         "ledger_recorded": True,
     }
+
+
+def _ledger_integrity_summary(entry: LedgerEntry) -> LedgerIntegritySummary:
+    if entry.ledger_integrity is not None:
+        return LedgerIntegritySummary.model_validate(entry.ledger_integrity.model_dump(mode="json"))
+    return LedgerIntegritySummary(
+        status="not_available",
+        diagnostics=[
+            {
+                "code": "ledger_integrity_not_available",
+                "message": "The ledger entry does not include file-backed integrity metadata.",
+            }
+        ],
+    )
 
 
 def _step_summary(

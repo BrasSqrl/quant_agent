@@ -48,11 +48,15 @@ EXPECTED_AGENT_CONTRACTS = {
     "agent_action_result.v1.schema.json",
     "agent_capability.v1.schema.json",
     "agent_execution_ledger.v1.schema.json",
+    "agent_external_approval_decision.v1.schema.json",
+    "agent_external_approval_request.v1.schema.json",
+    "agent_external_approval_submission.v1.schema.json",
     "agent_governance_policy_pack.v1.schema.json",
     "agent_plan.v1.schema.json",
     "agent_policy.v1.schema.json",
     "agent_provider_config.v1.schema.json",
     "agent_runtime_manifest.v1.schema.json",
+    "agent_support_bundle.v1.schema.json",
 }
 PHASE3_AGENT_EXAMPLES = [
     ("agent_action_preflight.v1.example.json", "agent_action_preflight.v1.schema.json"),
@@ -60,9 +64,22 @@ PHASE3_AGENT_EXAMPLES = [
     ("agent_action_result.v1.example.json", "agent_action_result.v1.schema.json"),
     ("agent_execution_ledger.v1.example.json", "agent_execution_ledger.v1.schema.json"),
     (
+        "agent_external_approval_decision.v1.example.json",
+        "agent_external_approval_decision.v1.schema.json",
+    ),
+    (
+        "agent_external_approval_request.v1.example.json",
+        "agent_external_approval_request.v1.schema.json",
+    ),
+    (
+        "agent_external_approval_submission.v1.example.json",
+        "agent_external_approval_submission.v1.schema.json",
+    ),
+    (
         "agent_governance_policy_pack.v1.example.json",
         "agent_governance_policy_pack.v1.schema.json",
     ),
+    ("agent_support_bundle.v1.example.json", "agent_support_bundle.v1.schema.json"),
 ]
 
 

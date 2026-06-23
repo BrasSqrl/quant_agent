@@ -60,6 +60,9 @@ class QuantSuiteContractLoader:
     def contract_file(self, name: str) -> Path:
         return self._root / "contracts" / name
 
+    def fixture_file(self, *parts: str) -> Path:
+        return self._root / "fixtures" / Path(*parts)
+
     def load_agent_capabilities(self) -> list[CapabilityDefinition]:
         capability_path = self._root / "contracts" / "agent_capability.v1.example.json"
         if not capability_path.is_file():

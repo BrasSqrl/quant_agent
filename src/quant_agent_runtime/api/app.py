@@ -8,6 +8,7 @@ from quant_agent_runtime.app_clients import AppClientError
 from quant_agent_runtime.models import (
     ActionRequestPreviewRequest,
     ActionRequestPreviewResult,
+    AgentSupportBundleResult,
     CancellationRequest,
     CancellationResult,
     ConfirmationRequest,
@@ -15,6 +16,13 @@ from quant_agent_runtime.models import (
     DemoNarrativeResult,
     ExecutionRequest,
     ExecutionResult,
+    ExternalApprovalDecisionImportRequest,
+    ExternalApprovalDecisionImportResult,
+    ExternalApprovalPreviewRequest,
+    ExternalApprovalPreviewResult,
+    ExternalApprovalSubmissionRequest,
+    ExternalApprovalSubmissionListResult,
+    ExternalApprovalSubmissionResult,
     LedgerEntry,
     PauseRequest,
     PauseResult,
@@ -249,6 +257,14 @@ def create_app(runtime: RuntimeContainer | None = None) -> FastAPI:
         except RuntimeValidationError as exc:
             raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
 
+    @api.get("/runs/{run_id}/support-bundle", response_model=AgentSupportBundleResult)
+    def get_run_support_bundle(run_id: str) -> AgentSupportBundleResult:
+        try:
+            require_governance("GET /runs/{run_id}/support-bundle", run_id=run_id)
+            return runtime_container.support_bundle(run_id)
+        except RuntimeValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
+
     @api.post("/cancellations", response_model=CancellationResult)
     def cancel_run(request: CancellationRequest) -> CancellationResult:
         try:
@@ -362,6 +378,67 @@ def create_app(runtime: RuntimeContainer | None = None) -> FastAPI:
         try:
             require_governance("POST /user-workflow-consents", run_id=request.run_id)
             return runtime_container.user_workflow.approve_consent(request)
+        except RuntimeValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
+
+    @api.post("/external-approval-requests", response_model=ExternalApprovalPreviewResult)
+    def preview_external_approval_request(
+        request: ExternalApprovalPreviewRequest,
+    ) -> ExternalApprovalPreviewResult:
+        try:
+            require_governance(
+                "POST /external-approval-requests",
+                run_id=request.run_id,
+                step_id=request.step_id,
+            )
+            return runtime_container.preview_external_approval_request(request)
+        except RuntimeValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
+
+    @api.post("/external-approval-decisions", response_model=ExternalApprovalDecisionImportResult)
+    def import_external_approval_decision(
+        request: ExternalApprovalDecisionImportRequest,
+    ) -> ExternalApprovalDecisionImportResult:
+        try:
+            approval_decision = request.approval_decision
+            step_id = approval_decision.get("step_id") if isinstance(approval_decision, dict) else None
+            capability_id = (
+                approval_decision.get("capability_id") if isinstance(approval_decision, dict) else None
+            )
+            require_governance(
+                "POST /external-approval-decisions",
+                run_id=request.run_id,
+                step_id=step_id if isinstance(step_id, str) else None,
+                capability_id=capability_id if isinstance(capability_id, str) else None,
+            )
+            return runtime_container.import_external_approval_decision(request)
+        except RuntimeValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
+
+    @api.post("/external-approval-submissions", response_model=ExternalApprovalSubmissionResult)
+    def submit_external_approval_request(
+        request: ExternalApprovalSubmissionRequest,
+    ) -> ExternalApprovalSubmissionResult:
+        try:
+            require_governance(
+                "POST /external-approval-submissions",
+                run_id=request.run_id,
+            )
+            return runtime_container.submit_external_approval_request(request)
+        except RuntimeValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
+
+    @api.get(
+        "/runs/{run_id}/external-approval-submissions",
+        response_model=ExternalApprovalSubmissionListResult,
+    )
+    def list_external_approval_submissions(run_id: str) -> ExternalApprovalSubmissionListResult:
+        try:
+            require_governance(
+                "GET /runs/{run_id}/external-approval-submissions",
+                run_id=run_id,
+            )
+            return runtime_container.list_external_approval_submissions(run_id)
         except RuntimeValidationError as exc:
             raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
 

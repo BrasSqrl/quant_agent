@@ -23,6 +23,8 @@ from quant_agent_runtime.validation.errors import RuntimeValidationError
 
 GOVERNANCE_POLICY_PACK_EXAMPLE = "agent_governance_policy_pack.v1.example.json"
 GOVERNANCE_POLICY_PACK_SCHEMA = "agent_governance_policy_pack.v1.schema.json"
+ENVIRONMENT_POLICY_PACK_SUPPORT_LEVEL = "suite_fixture_environment_selection"
+RELEASE_EVIDENCE_SUPPORT_LEVEL = "contract_policy_redaction_checks"
 
 READ_ROUTES = [
     "GET /health",
@@ -32,6 +34,8 @@ READ_ROUTES = [
     "GET /runs/{run_id}/orchestration",
     "GET /runs/{run_id}/ledger",
     "GET /runs/{run_id}/demo-narrative",
+    "GET /runs/{run_id}/support-bundle",
+    "GET /runs/{run_id}/external-approval-submissions",
 ]
 
 MUTATING_ROUTES = [
@@ -55,11 +59,18 @@ MUTATING_ROUTES = [
     "POST /user-plan-approvals",
     "POST /user-workflow-readiness",
     "POST /user-workflow-consents",
+    "POST /external-approval-requests",
+    "POST /external-approval-submissions",
+    "POST /external-approval-decisions",
 ]
 
 ALL_ROUTES = [*READ_ROUTES, *MUTATING_ROUTES]
 SOD_DENIAL_EVENT_TYPE = "governance_separation_of_duties_denied"
 SOD_SUPPORT_LEVEL = "role_aware_blocking_with_local_exemption"
+EXTERNAL_APPROVAL_EVENT_TYPE = "external_approval_request_preview"
+EXTERNAL_APPROVAL_DECISION_EVENT_TYPE = "external_approval_decision_import"
+EXTERNAL_APPROVAL_ENFORCEMENT_DENIAL_EVENT_TYPE = "external_approval_enforcement_denied"
+EXTERNAL_APPROVAL_ENFORCEMENT_SUPPORT_LEVEL = "policy_required_decision_enforced"
 
 
 @dataclass(frozen=True)
@@ -86,6 +97,24 @@ class SeparationOfDutiesDecision:
     rule_id: str | None = None
     prior_event_type: str | None = None
     prior_actor_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ExternalApprovalEnforcementDecision:
+    allowed: bool
+    route: str
+    capability_id: str | None
+    actor_id: str
+    actor_role: str
+    effective_actor_role: str
+    policy_pack_id: str
+    reason: str
+    code: str | None = None
+    rule_id: str | None = None
+    approval_scope: str | None = None
+    approval_request_id: str | None = None
+    approval_decision_id: str | None = None
+    approval_decision_status: str | None = None
 
 
 class GovernanceService:
@@ -122,9 +151,30 @@ class GovernanceService:
     ) -> "GovernanceService":
         override_path = os.environ.get("QUANT_AGENT_GOVERNANCE_POLICY_PACK_PATH")
         environment = os.environ.get("QUANT_AGENT_GOVERNANCE_ENVIRONMENT", "local_development")
-        source = "QUANT_AGENT_GOVERNANCE_POLICY_PACK_PATH" if override_path else contract_loader.source_label
-        path = Path(override_path) if override_path else contract_loader.contract_file(GOVERNANCE_POLICY_PACK_EXAMPLE)
-        payload, fallback_reason, diagnostics = _load_policy_pack(path)
+        selection_diagnostics: list[dict[str, Any]] = []
+        if override_path:
+            source = "QUANT_AGENT_GOVERNANCE_POLICY_PACK_PATH"
+            path = Path(override_path)
+        else:
+            fixture_path = contract_loader.fixture_file(
+                "agent_governance_policy_packs",
+                f"{environment}.agent_governance_policy_pack.v1.json.fixture",
+            )
+            if fixture_path.is_file():
+                source = f"{contract_loader.source_label}:environment_policy_pack_fixture"
+                path = fixture_path
+            else:
+                source = contract_loader.source_label
+                path = contract_loader.contract_file(GOVERNANCE_POLICY_PACK_EXAMPLE)
+                if environment != "local_development":
+                    selection_diagnostics.append(
+                        {
+                            "code": "environment_policy_pack_not_found",
+                            "message": "No matching governance environment policy pack fixture was found; canonical governance example is active.",
+                        }
+                    )
+        payload, fallback_reason, load_diagnostics = _load_policy_pack(path)
+        diagnostics = [*load_diagnostics, *selection_diagnostics]
         fallback_active = payload is None
         if payload is None:
             payload = _fallback_policy_pack()
@@ -231,6 +281,8 @@ class GovernanceService:
         )
         return GovernanceSummary(
             support_level=self.support_level,
+            environment_policy_pack_support_level=ENVIRONMENT_POLICY_PACK_SUPPORT_LEVEL,
+            release_evidence_support_level=RELEASE_EVIDENCE_SUPPORT_LEVEL,
             policy_pack_id=self.policy_pack_id,
             environment=self._environment,
             actor_id=self._actor_id,
@@ -252,6 +304,10 @@ class GovernanceService:
     @property
     def separation_of_duties_support_level(self) -> str:
         return SOD_SUPPORT_LEVEL
+
+    @property
+    def external_approval_enforcement_support_level(self) -> str:
+        return EXTERNAL_APPROVAL_ENFORCEMENT_SUPPORT_LEVEL
 
     def actor_summary(self) -> dict[str, Any]:
         return current_governance_actor(
@@ -290,6 +346,81 @@ class GovernanceService:
             diagnostics=[],
         )
 
+    def external_approval_enforcement_manifest_summary(self) -> dict[str, Any]:
+        return self.external_approval_enforcement_run_summary()
+
+    def external_approval_enforcement_run_summary(
+        self,
+        run_id: str | None = None,
+        *,
+        step_id: str | None = None,
+        capability_id: str | None = None,
+    ) -> dict[str, Any]:
+        protected_routes = self._external_approval_protected_routes()
+        blocked_routes: list[str] = []
+        blocker_reason: str | None = None
+        latest_decision: ExternalApprovalEnforcementDecision | None = None
+        if run_id:
+            for route in protected_routes:
+                decision = self.evaluate_external_approval_enforcement(
+                    route=route,
+                    run_id=run_id,
+                    step_id=step_id,
+                    capability_id=capability_id,
+                )
+                latest_decision = decision
+                if not decision.allowed:
+                    blocked_routes.append(route)
+                    blocker_reason = blocker_reason or decision.reason
+        rules = self._external_approval_rules()
+        return {
+            "support_level": self.external_approval_enforcement_support_level,
+            "run_id": run_id,
+            "actor_id": self._actor_id,
+            "actor_role": self._requested_actor_role,
+            "effective_actor_role": self._effective_actor_role,
+            "actor_exempt": self._actor_exempt_from_external_approval(),
+            "active_rule_ids": [_safe_string(rule.get("rule_id")) for rule in rules],
+            "blocking_rule_ids": [
+                _safe_string(rule.get("rule_id"))
+                for rule in rules
+                if rule.get("enforcement_mode") == "blocking"
+            ],
+            "audit_only_rule_ids": [
+                _safe_string(rule.get("rule_id"))
+                for rule in rules
+                if rule.get("enforcement_mode") == "audit_only"
+            ],
+            "protected_routes": protected_routes,
+            "protected_capability_ids": self._external_approval_protected_capability_ids(),
+            "accepted_decision_statuses": self._external_approval_accepted_statuses(),
+            "allowed_scopes": self._external_approval_allowed_scopes(),
+            "exempt_roles": self._external_approval_exempt_roles(),
+            "blocked": bool(blocked_routes),
+            "blocked_routes": blocked_routes,
+            "blocker_reason": blocker_reason,
+            "latest_request": _latest_external_approval_request_summary(self._ledger.get(run_id)) if run_id else None,
+            "latest_decision": _latest_external_approval_decision_summary(self._ledger.get(run_id)) if run_id else None,
+            "latest_enforcement_decision": (
+                {
+                    "allowed": latest_decision.allowed,
+                    "route": latest_decision.route,
+                    "capability_id": latest_decision.capability_id,
+                    "reason": latest_decision.reason,
+                    "code": latest_decision.code,
+                    "rule_id": latest_decision.rule_id,
+                    "approval_scope": latest_decision.approval_scope,
+                    "approval_request_id": latest_decision.approval_request_id,
+                    "approval_decision_id": latest_decision.approval_decision_id,
+                    "approval_decision_status": latest_decision.approval_decision_status,
+                }
+                if latest_decision is not None
+                else None
+            ),
+            "latest_denial": self._latest_external_approval_denial(run_id) if run_id else None,
+            "diagnostics": [],
+        }
+
     def require_allowed(
         self,
         *,
@@ -316,6 +447,16 @@ class GovernanceService:
             if run_id:
                 self._ledger_sod_denial(run_id, sod_decision, step_id=step_id)
             raise _separation_of_duties_denied(sod_decision, step_id=step_id)
+        external_approval_decision = self.evaluate_external_approval_enforcement(
+            route=route,
+            run_id=run_id,
+            step_id=step_id,
+            capability_id=resolved_capability_id,
+        )
+        if not external_approval_decision.allowed:
+            if run_id:
+                self._ledger_external_approval_denial(run_id, external_approval_decision, step_id=step_id)
+            raise _external_approval_enforcement_denied(external_approval_decision, step_id=step_id)
 
     def evaluate(self, *, route: str, capability_id: str | None = None) -> GovernanceDecision:
         route_allowed, route_reason = self._route_allowed(route)
@@ -386,6 +527,142 @@ class GovernanceService:
             prior_actor_id=violation.get("prior_actor_id"),
         )
 
+    def evaluate_external_approval_enforcement(
+        self,
+        *,
+        route: str,
+        run_id: str | None = None,
+        step_id: str | None = None,
+        capability_id: str | None = None,
+    ) -> ExternalApprovalEnforcementDecision:
+        rules = self._external_approval_rules_for(route=route, capability_id=capability_id)
+        if not rules:
+            return self._external_approval_decision(
+                True,
+                route,
+                capability_id,
+                "route_not_protected_by_external_approval",
+            )
+        blocking_rules = [rule for rule in rules if rule.get("enforcement_mode") == "blocking"]
+        if not blocking_rules:
+            return self._external_approval_decision(
+                True,
+                route,
+                capability_id,
+                "external_approval_audit_only",
+                rule_id=_safe_string(rules[0].get("rule_id")),
+            )
+        blocking_rule = blocking_rules[0]
+        if self._actor_exempt_from_external_approval(rule=blocking_rule):
+            return self._external_approval_decision(
+                True,
+                route,
+                capability_id,
+                "actor_role_exempt_from_external_approval",
+                rule_id=_safe_string(blocking_rule.get("rule_id")),
+            )
+        if not run_id:
+            return self._external_approval_decision(
+                True,
+                route,
+                capability_id,
+                "run_not_available_for_external_approval",
+                rule_id=_safe_string(blocking_rule.get("rule_id")),
+            )
+        entry = self._ledger.get(run_id)
+        if entry is None:
+            return self._external_approval_decision(
+                True,
+                route,
+                capability_id,
+                "run_not_found_for_external_approval",
+                rule_id=_safe_string(blocking_rule.get("rule_id")),
+            )
+        unsafe_issues = find_unsafe_payload_issues(entry.model_dump(mode="json"), root="external_approval_enforcement_ledger")
+        if unsafe_issues:
+            return self._external_approval_decision(
+                False,
+                route,
+                capability_id,
+                "unsafe_ledger_external_approval_enforcement",
+                code="external_approval_decision_denied",
+                rule_id=_safe_string(blocking_rule.get("rule_id")),
+            )
+        active_plan_id = _active_plan_id(entry)
+        if active_plan_id is None:
+            return self._external_approval_decision(
+                False,
+                route,
+                capability_id,
+                "missing_active_plan_for_external_approval",
+                code="external_approval_required",
+                rule_id=_safe_string(blocking_rule.get("rule_id")),
+            )
+        request_event = _latest_matching_external_approval_request(
+            entry,
+            rule=blocking_rule,
+            policy_pack_id=self.policy_pack_id,
+            active_plan_id=active_plan_id,
+            step_id=step_id,
+            capability_id=capability_id,
+        )
+        if request_event is None:
+            return self._external_approval_decision(
+                False,
+                route,
+                capability_id,
+                "missing_external_approval_request",
+                code="external_approval_required",
+                rule_id=_safe_string(blocking_rule.get("rule_id")),
+            )
+        decision_event = _latest_matching_external_approval_decision(
+            entry,
+            request_event=request_event,
+            rule=blocking_rule,
+            policy_pack_id=self.policy_pack_id,
+            step_id=step_id,
+            capability_id=capability_id,
+        )
+        request_id = _safe_string(request_event.get("approval_request_id"))
+        request_scope = _safe_string(request_event.get("approval_scope"))
+        if decision_event is None:
+            return self._external_approval_decision(
+                False,
+                route,
+                capability_id,
+                "missing_external_approval_decision",
+                code="external_approval_required",
+                rule_id=_safe_string(blocking_rule.get("rule_id")),
+                approval_scope=request_scope,
+                approval_request_id=request_id,
+            )
+        decision_status = _safe_string(decision_event.get("approval_decision_status"))
+        accepted_statuses = set(_safe_string_list(blocking_rule.get("accepted_decision_statuses")) or ["approved"])
+        if decision_status not in accepted_statuses:
+            return self._external_approval_decision(
+                False,
+                route,
+                capability_id,
+                "external_approval_decision_not_accepted",
+                code="external_approval_decision_denied",
+                rule_id=_safe_string(blocking_rule.get("rule_id")),
+                approval_scope=request_scope,
+                approval_request_id=request_id,
+                approval_decision_id=_safe_string(decision_event.get("approval_decision_id")),
+                approval_decision_status=decision_status,
+            )
+        return self._external_approval_decision(
+            True,
+            route,
+            capability_id,
+            "external_approval_decision_accepted",
+            rule_id=_safe_string(blocking_rule.get("rule_id")),
+            approval_scope=request_scope,
+            approval_request_id=request_id,
+            approval_decision_id=_safe_string(decision_event.get("approval_decision_id")),
+            approval_decision_status=decision_status,
+        )
+
     def _route_allowed(self, route: str) -> tuple[bool, str]:
         permissions = _permissions_for_role(
             self._policy_pack.get("route_permissions"),
@@ -437,6 +714,37 @@ class GovernanceService:
             prior_actor_id=prior_actor_id,
         )
 
+    def _external_approval_decision(
+        self,
+        allowed: bool,
+        route: str,
+        capability_id: str | None,
+        reason: str,
+        *,
+        code: str | None = None,
+        rule_id: str | None = None,
+        approval_scope: str | None = None,
+        approval_request_id: str | None = None,
+        approval_decision_id: str | None = None,
+        approval_decision_status: str | None = None,
+    ) -> ExternalApprovalEnforcementDecision:
+        return ExternalApprovalEnforcementDecision(
+            allowed=allowed,
+            route=route,
+            capability_id=capability_id,
+            actor_id=self._actor_id,
+            actor_role=self._requested_actor_role,
+            effective_actor_role=self._effective_actor_role,
+            policy_pack_id=self.policy_pack_id,
+            reason=reason,
+            code=code,
+            rule_id=rule_id,
+            approval_scope=approval_scope,
+            approval_request_id=approval_request_id,
+            approval_decision_id=approval_decision_id,
+            approval_decision_status=approval_decision_status,
+        )
+
     def _active_sod_rules(self) -> list[dict[str, Any]]:
         rules = self._policy_pack.get("separation_of_duties_rules")
         if not isinstance(rules, list):
@@ -448,6 +756,83 @@ class GovernanceService:
             and rule.get("enforcement_mode") == "blocking"
             and _safe_string(rule.get("rule_id"))
         ]
+
+    def _external_approval_rules(self) -> list[dict[str, Any]]:
+        rules = self._policy_pack.get("external_approval_rules")
+        if not isinstance(rules, list):
+            return []
+        return [
+            rule
+            for rule in rules
+            if isinstance(rule, dict)
+            and rule.get("enforcement_mode") in {"blocking", "audit_only"}
+            and _safe_string(rule.get("rule_id"))
+        ]
+
+    def _external_approval_rules_for(
+        self,
+        *,
+        route: str,
+        capability_id: str | None,
+    ) -> list[dict[str, Any]]:
+        matches: list[dict[str, Any]] = []
+        for rule in self._external_approval_rules():
+            protected_routes = set(_safe_string_list(rule.get("protected_routes")))
+            if "*" not in protected_routes and route not in protected_routes:
+                continue
+            protected_capabilities = set(_safe_string_list(rule.get("protected_capability_ids")))
+            if capability_id and "*" not in protected_capabilities and capability_id not in protected_capabilities:
+                continue
+            matches.append(rule)
+        return matches
+
+    def _external_approval_exempt_roles(self) -> list[str]:
+        roles: list[str] = []
+        for rule in self._external_approval_rules():
+            for role in _safe_string_list(rule.get("exempt_roles")):
+                if role not in roles:
+                    roles.append(role)
+        return roles
+
+    def _external_approval_protected_routes(self) -> list[str]:
+        routes: list[str] = []
+        for rule in self._external_approval_rules():
+            for route in _safe_string_list(rule.get("protected_routes")):
+                if route not in routes:
+                    routes.append(route)
+        return routes
+
+    def _external_approval_protected_capability_ids(self) -> list[str]:
+        capability_ids: list[str] = []
+        for rule in self._external_approval_rules():
+            for capability_id in _safe_string_list(rule.get("protected_capability_ids")):
+                if capability_id not in capability_ids:
+                    capability_ids.append(capability_id)
+        return capability_ids
+
+    def _external_approval_accepted_statuses(self) -> list[str]:
+        statuses: list[str] = []
+        for rule in self._external_approval_rules():
+            for status in _safe_string_list(rule.get("accepted_decision_statuses")):
+                if status not in statuses:
+                    statuses.append(status)
+        return statuses or ["approved"]
+
+    def _external_approval_allowed_scopes(self) -> list[str]:
+        scopes: list[str] = []
+        for rule in self._external_approval_rules():
+            for scope in _safe_string_list(rule.get("allowed_scopes")):
+                if scope not in scopes:
+                    scopes.append(scope)
+        return scopes or ["run", "step"]
+
+    def _actor_exempt_from_external_approval(self, *, rule: dict[str, Any] | None = None) -> bool:
+        exempt_roles = (
+            set(_safe_string_list(rule.get("exempt_roles")))
+            if rule is not None
+            else set(self._external_approval_exempt_roles())
+        )
+        return self._effective_actor_role in exempt_roles or self._requested_actor_role in exempt_roles
 
     def _sod_exempt_roles(self) -> list[str]:
         roles: list[str] = []
@@ -535,6 +920,20 @@ class GovernanceService:
                 return event
         return None
 
+    def _latest_external_approval_denial(self, run_id: str | None) -> dict[str, Any] | None:
+        if not run_id:
+            return None
+        entry = self._ledger.get(run_id)
+        if entry is None:
+            return None
+        for event in reversed(entry.recovery_events):
+            if (
+                isinstance(event, dict)
+                and event.get("event_type") == EXTERNAL_APPROVAL_ENFORCEMENT_DENIAL_EVENT_TYPE
+            ):
+                return event
+        return None
+
     def _capability_id_for_step(self, run_id: str, step_id: str) -> str | None:
         entry = self._ledger.get(run_id)
         if entry is None:
@@ -616,6 +1015,47 @@ class GovernanceService:
             "execution_permitted": False,
         }
         unsafe_issues = find_unsafe_payload_issues(record, root="governance_separation_of_duties_denial")
+        if unsafe_issues:
+            return
+        try:
+            self._ledger.append_recovery_event(run_id, record)
+        except (KeyError, ValueError):
+            return
+
+    def _ledger_external_approval_denial(
+        self,
+        run_id: str,
+        decision: ExternalApprovalEnforcementDecision,
+        *,
+        step_id: str | None,
+    ) -> None:
+        if self._ledger.get(run_id) is None:
+            return
+        record = {
+            "recovery_event_id": f"recovery_{uuid4().hex[:12]}",
+            "event_type": EXTERNAL_APPROVAL_ENFORCEMENT_DENIAL_EVENT_TYPE,
+            "status": "denied",
+            "actor": "local_user",
+            "governance_actor": self.actor_summary(),
+            "actor_id": decision.actor_id,
+            "actor_role": decision.actor_role,
+            "effective_actor_role": decision.effective_actor_role,
+            "policy_pack_id": decision.policy_pack_id,
+            "rule_id": decision.rule_id,
+            "denied_route": decision.route,
+            "denied_action": decision.route,
+            "step_id": step_id,
+            "capability_id": decision.capability_id,
+            "reason": decision.reason,
+            "validation_code": decision.code,
+            "approval_scope": decision.approval_scope,
+            "approval_request_id": decision.approval_request_id,
+            "approval_decision_id": decision.approval_decision_id,
+            "approval_decision_status": decision.approval_decision_status,
+            "denied_at_utc": _utc_now_label(),
+            "execution_permitted": False,
+        }
+        unsafe_issues = find_unsafe_payload_issues(record, root="external_approval_enforcement_denial")
         if unsafe_issues:
             return
         try:
@@ -713,6 +1153,7 @@ def _fallback_policy_pack() -> dict[str, Any]:
             "unknown_role": "allow_existing_local_behavior_with_diagnostics",
         },
         "separation_of_duties_rules": [],
+        "external_approval_rules": [],
     }
 
 
@@ -782,6 +1223,108 @@ def _safe_actor_label(value: Any, *, fallback: str) -> str:
     return stripped
 
 
+def _latest_matching_external_approval_request(
+    entry: Any,
+    *,
+    rule: dict[str, Any],
+    policy_pack_id: str,
+    active_plan_id: str,
+    step_id: str | None,
+    capability_id: str | None,
+) -> dict[str, Any] | None:
+    allowed_scopes = set(_safe_string_list(rule.get("allowed_scopes")) or ["run", "step"])
+    for event in reversed(getattr(entry, "recovery_events", [])):
+        if not isinstance(event, dict):
+            continue
+        if event.get("event_type") != EXTERNAL_APPROVAL_EVENT_TYPE or event.get("status") != "previewed":
+            continue
+        if _safe_string(event.get("policy_pack_id")) != policy_pack_id:
+            continue
+        if _safe_string(event.get("plan_id")) != active_plan_id:
+            continue
+        scope = _safe_string(event.get("approval_scope"))
+        if scope not in allowed_scopes:
+            continue
+        if scope == "step":
+            if not step_id or _safe_string(event.get("step_id")) != step_id:
+                continue
+            if capability_id and _safe_string(event.get("capability_id")) != capability_id:
+                continue
+        return event
+    return None
+
+
+def _latest_matching_external_approval_decision(
+    entry: Any,
+    *,
+    request_event: dict[str, Any],
+    rule: dict[str, Any],
+    policy_pack_id: str,
+    step_id: str | None,
+    capability_id: str | None,
+) -> dict[str, Any] | None:
+    request_id = _safe_string(request_event.get("approval_request_id"))
+    if not request_id:
+        return None
+    request_scope = _safe_string(request_event.get("approval_scope"))
+    for event in reversed(getattr(entry, "recovery_events", [])):
+        if not isinstance(event, dict):
+            continue
+        if event.get("event_type") != EXTERNAL_APPROVAL_DECISION_EVENT_TYPE or event.get("status") != "imported":
+            continue
+        if _safe_string(event.get("approval_request_id")) != request_id:
+            continue
+        if _safe_string(event.get("policy_pack_id")) != policy_pack_id:
+            continue
+        if request_scope == "step":
+            if not step_id or _safe_string(event.get("step_id")) != step_id:
+                continue
+            if capability_id and _safe_string(event.get("capability_id")) != capability_id:
+                continue
+        unsafe_issues = find_unsafe_payload_issues(event, root="external_approval_decision_event")
+        if unsafe_issues:
+            return None
+        return event
+    return None
+
+
+def _latest_external_approval_request_summary(entry: Any | None) -> dict[str, Any] | None:
+    if entry is None:
+        return None
+    for event in reversed(getattr(entry, "recovery_events", [])):
+        if isinstance(event, dict) and event.get("event_type") == EXTERNAL_APPROVAL_EVENT_TYPE:
+            return {
+                "approval_request_id": _safe_string(event.get("approval_request_id")),
+                "approval_scope": _safe_string(event.get("approval_scope")),
+                "step_id": _safe_string(event.get("step_id")),
+                "capability_id": _safe_string(event.get("capability_id")),
+                "policy_pack_id": _safe_string(event.get("policy_pack_id")),
+                "plan_id": _safe_string(event.get("plan_id")),
+                "status": _safe_string(event.get("status")),
+                "external_submission_status": _safe_string(event.get("external_submission_status")),
+            }
+    return None
+
+
+def _latest_external_approval_decision_summary(entry: Any | None) -> dict[str, Any] | None:
+    if entry is None:
+        return None
+    for event in reversed(getattr(entry, "recovery_events", [])):
+        if isinstance(event, dict) and event.get("event_type") == EXTERNAL_APPROVAL_DECISION_EVENT_TYPE:
+            return {
+                "approval_request_id": _safe_string(event.get("approval_request_id")),
+                "approval_decision_id": _safe_string(event.get("approval_decision_id")),
+                "approval_decision_status": _safe_string(event.get("approval_decision_status")),
+                "approval_scope": _safe_string(event.get("approval_scope")),
+                "step_id": _safe_string(event.get("step_id")),
+                "capability_id": _safe_string(event.get("capability_id")),
+                "policy_pack_id": _safe_string(event.get("policy_pack_id")),
+                "status": _safe_string(event.get("status")),
+                "advisory_only": bool(event.get("advisory_only")),
+            }
+    return None
+
+
 def _permission_denied(
     decision: GovernanceDecision,
     *,
@@ -816,6 +1359,30 @@ def _separation_of_duties_denied(
             errors=[
                 ValidationIssue(
                     code="governance_separation_of_duties_denied",
+                    message=message,
+                    step_id=step_id,
+                    capability_id=decision.capability_id,
+                )
+            ],
+        )
+    )
+
+
+def _external_approval_enforcement_denied(
+    decision: ExternalApprovalEnforcementDecision,
+    *,
+    step_id: str | None,
+) -> RuntimeValidationError:
+    code = decision.code or "external_approval_required"
+    message = "The active governance policy requires a matching approved external approval decision before this action."
+    if code == "external_approval_decision_denied":
+        message = "The latest matching external approval decision does not permit this execution or retry action."
+    return RuntimeValidationError(
+        PlanValidationResult(
+            status="rejected",
+            errors=[
+                ValidationIssue(
+                    code=code,
                     message=message,
                     step_id=step_id,
                     capability_id=decision.capability_id,

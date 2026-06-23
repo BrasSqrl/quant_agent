@@ -358,6 +358,8 @@ class StaleAssumptionSummary(StrictModel):
 
 class GovernanceSummary(StrictModel):
     support_level: str = "not_available"
+    environment_policy_pack_support_level: str = "not_available"
+    release_evidence_support_level: str = "not_available"
     policy_pack_id: str
     environment: str
     actor_id: str | None = None
@@ -391,6 +393,30 @@ class SeparationOfDutiesSummary(StrictModel):
     diagnostics: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class LedgerIntegrity(StrictModel):
+    status: str = "not_available"
+    algorithm: str | None = None
+    sequence_number: int = 0
+    previous_hash: str | None = None
+    payload_hash: str | None = None
+    recorded_at_utc: str | None = None
+    contract_schema: str | None = None
+    journal_consistent: bool = False
+    diagnostics: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class LedgerIntegritySummary(StrictModel):
+    status: str = "not_available"
+    algorithm: str | None = None
+    sequence_number: int = 0
+    previous_hash: str | None = None
+    payload_hash: str | None = None
+    recorded_at_utc: str | None = None
+    contract_schema: str | None = None
+    journal_consistent: bool = False
+    diagnostics: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class RunStatusResult(StrictModel):
     run_id: str
     parent_run_id: str | None = None
@@ -408,6 +434,8 @@ class RunStatusResult(StrictModel):
     latest_recovery: dict[str, Any] | None = None
     latest_cancellation: dict[str, Any] | None = None
     ledger_summary: dict[str, Any]
+    external_approval_summary: dict[str, Any] | None = None
+    external_approval_enforcement_summary: dict[str, Any] | None = None
     run_progress_summary: RunProgressSummary
     stale_assumption_summary: StaleAssumptionSummary
     ownership_summary: UserWorkflowOwnershipSummary | None = None
@@ -419,6 +447,7 @@ class RunStatusResult(StrictModel):
     allowed_next_actions: list[str] = Field(default_factory=list)
     governance_summary: GovernanceSummary | None = None
     separation_of_duties_summary: SeparationOfDutiesSummary | None = None
+    ledger_integrity_summary: LedgerIntegritySummary | None = None
     validation: PlanValidationResult
 
 
@@ -439,6 +468,8 @@ class RunSummary(StrictModel):
     latest_cancellation: dict[str, Any] | None = None
     latest_event_at_utc: str | None = None
     ledger_summary: dict[str, Any]
+    external_approval_summary: dict[str, Any] | None = None
+    external_approval_enforcement_summary: dict[str, Any] | None = None
     ownership_summary: UserWorkflowOwnershipSummary | None = None
     plan_review_summary: UserPlanReviewSummary | None = None
     plan_approval_summary: UserPlanApprovalSummary | None = None
@@ -447,6 +478,7 @@ class RunSummary(StrictModel):
     allowed_user_owned_actions: list[str] = Field(default_factory=list)
     governance_summary: GovernanceSummary | None = None
     separation_of_duties_summary: SeparationOfDutiesSummary | None = None
+    ledger_integrity_summary: LedgerIntegritySummary | None = None
 
 
 class RunListResult(StrictModel):
@@ -488,6 +520,8 @@ class RunOrchestrationResult(StrictModel):
     steps: list[OrchestrationStepSummary]
     allowed_next_actions: list[str] = Field(default_factory=list)
     ledger_summary: dict[str, Any]
+    external_approval_summary: dict[str, Any] | None = None
+    external_approval_enforcement_summary: dict[str, Any] | None = None
     run_progress_summary: RunProgressSummary
     stale_assumption_summary: StaleAssumptionSummary
     ownership_summary: UserWorkflowOwnershipSummary | None = None
@@ -498,6 +532,7 @@ class RunOrchestrationResult(StrictModel):
     allowed_user_owned_actions: list[str] = Field(default_factory=list)
     governance_summary: GovernanceSummary | None = None
     separation_of_duties_summary: SeparationOfDutiesSummary | None = None
+    ledger_integrity_summary: LedgerIntegritySummary | None = None
     validation: PlanValidationResult
 
 
@@ -903,6 +938,101 @@ class DemoNarrativeResult(StrictModel):
     validation: PlanValidationResult
 
 
+class AgentSupportBundleResult(StrictModel):
+    schema_version: str = "1.0"
+    data_policy: Literal["summaries_and_references_only"] = "summaries_and_references_only"
+    bundle_id: str
+    run_id: str
+    generated_at_utc: str
+    runtime_summary: dict[str, Any]
+    provider_summary: dict[str, Any] | None = None
+    governance_summary: GovernanceSummary | None = None
+    separation_of_duties_summary: SeparationOfDutiesSummary | None = None
+    run_status: RunStatusResult
+    orchestration: RunOrchestrationResult
+    ledger: dict[str, Any]
+    ledger_integrity_summary: LedgerIntegritySummary
+    contract_summary: dict[str, Any]
+    redaction_report: dict[str, Any]
+    validation: PlanValidationResult
+
+
+class ExternalApprovalPreviewRequest(StrictModel):
+    run_id: str = Field(min_length=1)
+    approval_intent: Literal["preview_external_approval_request"]
+    approval_scope: Literal["run", "step"]
+    step_id: str | None = None
+
+
+class ExternalApprovalPreviewResult(StrictModel):
+    run_id: str
+    step_id: str | None = None
+    approval_request: dict[str, Any]
+    run_status: RunStatusResult
+    orchestration: RunOrchestrationResult
+    validation: PlanValidationResult
+    ledger_recorded: bool
+
+
+class ExternalApprovalDecisionImportRequest(StrictModel):
+    run_id: str = Field(min_length=1)
+    decision_intent: Literal["import_external_approval_decision"]
+    approval_decision: dict[str, Any]
+
+
+class ExternalApprovalDecisionImportResult(StrictModel):
+    run_id: str
+    step_id: str | None = None
+    approval_request_id: str
+    approval_decision: dict[str, Any]
+    external_approval_summary: dict[str, Any]
+    run_status: RunStatusResult
+    orchestration: RunOrchestrationResult
+    validation: PlanValidationResult
+    ledger_recorded: bool
+
+
+class ExternalApprovalSubmissionRequest(StrictModel):
+    run_id: str = Field(min_length=1)
+    submission_intent: Literal["submit_external_approval_request"]
+    approval_request_id: str = Field(min_length=1)
+
+
+class ExternalApprovalSubmissionResult(StrictModel):
+    run_id: str
+    step_id: str | None = None
+    approval_request_id: str
+    external_approval_submission: dict[str, Any]
+    run_status: RunStatusResult
+    orchestration: RunOrchestrationResult
+    validation: PlanValidationResult
+    ledger_recorded: bool
+
+
+class ExternalApprovalSubmissionSummary(StrictModel):
+    external_approval_submission_id: str
+    approval_request_id: str
+    approval_scope: str
+    step_id: str | None = None
+    capability_id: str | None = None
+    adapter_mode: str
+    submission_status: str
+    outbox_status: Literal["present", "missing", "disabled", "not_checked"]
+    submitted_at_utc: str | None = None
+    submission_reference: dict[str, Any] = Field(default_factory=dict)
+    latest_matching_decision: dict[str, Any] | None = None
+    validation: PlanValidationResult
+    ledger_integrity_summary: LedgerIntegritySummary | None = None
+
+
+class ExternalApprovalSubmissionListResult(StrictModel):
+    run_id: str
+    submissions: list[ExternalApprovalSubmissionSummary]
+    external_approval_summary: dict[str, Any]
+    validation: PlanValidationResult
+    ledger_recorded: Literal[False] = False
+
+
 class LedgerEntry(StrictModel):
     schema_version: str = "1.0"
     data_policy: Literal["summaries_and_references_only"] = "summaries_and_references_only"
@@ -928,6 +1058,7 @@ class LedgerEntry(StrictModel):
     cancellation_events: list[dict[str, Any]] = Field(default_factory=list)
     final_status: str = "planned"
     safe_artifact_map: list[dict[str, Any]] = Field(default_factory=list)
+    ledger_integrity: LedgerIntegrity | None = None
 
 
 class RuntimeManifest(StrictModel):
@@ -949,6 +1080,8 @@ class RuntimeManifest(StrictModel):
     supported_execution_capabilities: list[str] = Field(default_factory=list)
     ledger_support_level: str
     ledger_storage: dict[str, Any] = Field(default_factory=dict)
+    ledger_integrity_support_level: str = "not_available"
+    support_bundle_support_level: str = "not_available"
     recovery_support_level: str = "not_available"
     orchestration_support_level: str = "not_available"
     retry_support_level: str = "not_available"
@@ -960,8 +1093,16 @@ class RuntimeManifest(StrictModel):
     autopilot_support_level: str = "not_available"
     sample_reset_support_level: str = "not_available"
     demo_narrative_support_level: str = "not_available"
+    external_approval_support_level: str = "not_available"
+    external_approval_decision_support_level: str = "not_available"
+    external_approval_enforcement_support_level: str = "not_available"
+    external_approval_submission_support_level: str = "not_available"
+    external_approval_submission_status_support_level: str = "not_available"
+    external_approval_submission_adapter: dict[str, Any] | None = None
     governance_support_level: str = "not_available"
     separation_of_duties_support_level: str = "not_available"
+    environment_policy_pack_support_level: str = "not_available"
+    release_evidence_support_level: str = "not_available"
     plan_only_support_level: str
     execution_support_level: str
     redaction_support_level: str
@@ -973,4 +1114,5 @@ class RuntimeManifest(StrictModel):
     provider_status: ProviderRuntimeStatus
     governance_summary: GovernanceSummary | None = None
     separation_of_duties_summary: SeparationOfDutiesSummary | None = None
+    external_approval_enforcement_summary: dict[str, Any] | None = None
     safety_boundaries: list[str]

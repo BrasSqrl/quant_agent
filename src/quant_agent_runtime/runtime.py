@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any
+from uuid import uuid4
 
 from quant_agent_runtime import __version__
 from quant_agent_runtime.action_request import ActionRequestPreviewService
@@ -10,10 +13,40 @@ from quant_agent_runtime.contracts import QuantSuiteContractLoader
 from quant_agent_runtime.contracts.internal_test_fixtures import TEMPORARY_AGENT_CONTRACT_FIXTURES
 from quant_agent_runtime.demo_narrative import DemoNarrativeService
 from quant_agent_runtime.execution import ExecutionService
-from quant_agent_runtime.governance import ALL_ROUTES, GovernanceService
+from quant_agent_runtime.external_approval import (
+    EXTERNAL_APPROVAL_DECISION_SUPPORT_LEVEL,
+    EXTERNAL_APPROVAL_SUPPORT_LEVEL,
+    EXTERNAL_APPROVAL_SUBMISSION_SUPPORT_LEVEL,
+    EXTERNAL_APPROVAL_SUBMISSION_STATUS_SUPPORT_LEVEL,
+    ExternalApprovalService,
+    ExternalApprovalSubmissionService,
+    external_approval_submission_adapter_status,
+)
+from quant_agent_runtime.governance import (
+    ALL_ROUTES,
+    ENVIRONMENT_POLICY_PACK_SUPPORT_LEVEL,
+    EXTERNAL_APPROVAL_ENFORCEMENT_SUPPORT_LEVEL,
+    RELEASE_EVIDENCE_SUPPORT_LEVEL,
+    GovernanceService,
+)
 from quant_agent_runtime.ledger import FileBackedLedger
 from quant_agent_runtime.model_gateway import FakePlanProvider, ModelProvider, SharedLlmPlanProvider
-from quant_agent_runtime.models import ProviderMode, ProviderRuntimeStatus, RiskTier, RuntimeManifest
+from quant_agent_runtime.models import (
+    AgentSupportBundleResult,
+    ExternalApprovalDecisionImportRequest,
+    ExternalApprovalDecisionImportResult,
+    ExternalApprovalPreviewRequest,
+    ExternalApprovalPreviewResult,
+    ExternalApprovalSubmissionRequest,
+    ExternalApprovalSubmissionListResult,
+    ExternalApprovalSubmissionResult,
+    PlanValidationResult,
+    ProviderMode,
+    ProviderRuntimeStatus,
+    RiskTier,
+    RuntimeManifest,
+    ValidationIssue,
+)
 from quant_agent_runtime.orchestration import OrchestrationService
 from quant_agent_runtime.app_clients import LocalAgentAppClient
 from quant_agent_runtime.capability_discovery import CapabilityDiscoveryService
@@ -22,12 +55,18 @@ from quant_agent_runtime.plan_revision_activation import PlanRevisionActivationS
 from quant_agent_runtime.planner import PlannerService
 from quant_agent_runtime.preflight import PreflightService
 from quant_agent_runtime.provider_config import runtime_provider_status
+from quant_agent_runtime.redaction import find_unsafe_payload_issues
 from quant_agent_runtime.revalidation import RunRevalidationService
 from quant_agent_runtime.retry import RetryService
 from quant_agent_runtime.run_status import RunStatusService
 from quant_agent_runtime.sample_autopilot import SampleAutopilotPreviewService, SampleAutopilotStepService
 from quant_agent_runtime.sample_reset import SampleResetService
 from quant_agent_runtime.user_workflow import UserWorkflowService
+from quant_agent_runtime.validation.errors import RuntimeValidationError
+
+
+SUPPORT_BUNDLE_CONTRACT_SCHEMA = "agent_support_bundle.v1.schema.json"
+SUPPORT_BUNDLE_SUPPORT_LEVEL = "redacted_run_bundle_json_v1"
 
 
 @dataclass
@@ -52,6 +91,159 @@ class RuntimeContainer:
     capability_discovery: CapabilityDiscoveryService
     provider_status: ProviderRuntimeStatus | None = None
     governance: GovernanceService | None = None
+    external_approval: ExternalApprovalService | None = None
+    external_approval_submission: ExternalApprovalSubmissionService | None = None
+
+    def support_bundle(self, run_id: str) -> AgentSupportBundleResult:
+        manifest = self.manifest()
+        run_status = self.run_status.get_run_status(run_id)
+        orchestration = self.orchestration.get_run_orchestration(run_id)
+        ledger_entry = self.run_status.get_ledger_entry(run_id)
+        ledger_payload = ledger_entry.model_dump(mode="json")
+        integrity_summary = (
+            run_status.ledger_integrity_summary
+            or self.planner.ledger.integrity_summary(run_id)
+        )
+        contract_result = self.contract_loader.load_agent_contracts()
+        bundle = AgentSupportBundleResult(
+            bundle_id=f"support_bundle_{uuid4().hex[:12]}",
+            run_id=run_id,
+            generated_at_utc=_utc_now_label(),
+            runtime_summary={
+                "service_name": manifest.service_name,
+                "runtime_version": manifest.runtime_version,
+                "contract_source": manifest.contract_source,
+                "canonical_agent_contracts_loaded": manifest.canonical_agent_contracts_loaded,
+                "execution_supported": manifest.execution_supported,
+                "execution_support_level": manifest.execution_support_level,
+                "ledger_support_level": manifest.ledger_support_level,
+                "ledger_integrity_support_level": manifest.ledger_integrity_support_level,
+                "support_bundle_support_level": manifest.support_bundle_support_level,
+                "plan_only_mode": manifest.plan_only_mode,
+                "safety_boundaries": manifest.safety_boundaries,
+            },
+            provider_summary=manifest.provider_status.model_dump(mode="json"),
+            governance_summary=manifest.governance_summary,
+            separation_of_duties_summary=manifest.separation_of_duties_summary,
+            run_status=run_status,
+            orchestration=orchestration,
+            ledger=ledger_payload,
+            ledger_integrity_summary=integrity_summary,
+            contract_summary={
+                "support_bundle_contract": SUPPORT_BUNDLE_CONTRACT_SCHEMA,
+                "ledger_contract": "agent_execution_ledger.v1.schema.json",
+                "loaded_agent_contract_count": len(contract_result.loaded_agent_contracts),
+                "canonical_agent_contracts_loaded": contract_result.canonical_agent_contracts_loaded,
+            },
+            redaction_report={
+                "data_policy": "summaries_and_references_only",
+                "raw_payloads_included": False,
+                "unsafe_issue_count": 0,
+                "excluded_categories": [
+                    "raw_rows",
+                    "raw_paths",
+                    "urls",
+                    "bucket_names",
+                    "secrets",
+                    "credentials",
+                    "raw_prompts",
+                    "raw_provider_responses",
+                    "raw_app_payloads",
+                ],
+            },
+            validation=PlanValidationResult(status="valid"),
+        )
+        payload = bundle.model_dump(mode="json")
+        unsafe_issues = find_unsafe_payload_issues(payload, root="support_bundle")
+        if unsafe_issues:
+            raise RuntimeValidationError(
+                PlanValidationResult(
+                    status="rejected",
+                    errors=[
+                        issue.model_copy(update={"code": "unsafe_support_bundle_payload"})
+                        for issue in unsafe_issues
+                    ],
+                )
+            )
+        try:
+            self.contract_loader.validate_agent_contract_payload(
+                payload,
+                SUPPORT_BUNDLE_CONTRACT_SCHEMA,
+            )
+        except Exception as exc:
+            raise RuntimeValidationError(
+                PlanValidationResult(
+                    status="rejected",
+                    errors=[
+                        ValidationIssue(
+                            code="support_bundle_contract_validation_failed",
+                            message="The generated support bundle did not validate against the canonical contract.",
+                        )
+                    ],
+                )
+            ) from exc
+        return bundle
+
+    def preview_external_approval_request(
+        self,
+        request: ExternalApprovalPreviewRequest,
+    ) -> ExternalApprovalPreviewResult:
+        run_status = self.run_status.get_run_status(request.run_id)
+        orchestration = self.orchestration.get_run_orchestration(request.run_id)
+        support_bundle = self.support_bundle(request.run_id)
+        service = self.external_approval or ExternalApprovalService(
+            ledger=self.planner.ledger,
+            contract_loader=self.contract_loader,
+            governance=self.governance,
+        )
+        return service.preview_request(
+            request,
+            run_status=run_status,
+            orchestration=orchestration,
+            support_bundle=support_bundle,
+        )
+
+    def import_external_approval_decision(
+        self,
+        request: ExternalApprovalDecisionImportRequest,
+    ) -> ExternalApprovalDecisionImportResult:
+        run_status = self.run_status.get_run_status(request.run_id)
+        orchestration = self.orchestration.get_run_orchestration(request.run_id)
+        service = self.external_approval or ExternalApprovalService(
+            ledger=self.planner.ledger,
+            contract_loader=self.contract_loader,
+            governance=self.governance,
+        )
+        return service.import_decision(
+            request,
+            run_status=run_status,
+            orchestration=orchestration,
+        )
+
+    def submit_external_approval_request(
+        self,
+        request: ExternalApprovalSubmissionRequest,
+    ) -> ExternalApprovalSubmissionResult:
+        run_status = self.run_status.get_run_status(request.run_id)
+        orchestration = self.orchestration.get_run_orchestration(request.run_id)
+        service = self.external_approval_submission or ExternalApprovalSubmissionService(
+            ledger=self.planner.ledger,
+            contract_loader=self.contract_loader,
+            governance=self.governance,
+        )
+        return service.submit_request(
+            request,
+            run_status=run_status,
+            orchestration=orchestration,
+        )
+
+    def list_external_approval_submissions(self, run_id: str) -> ExternalApprovalSubmissionListResult:
+        service = self.external_approval_submission or ExternalApprovalSubmissionService(
+            ledger=self.planner.ledger,
+            contract_loader=self.contract_loader,
+            governance=self.governance,
+        )
+        return service.list_submissions(run_id)
 
     def manifest(self) -> RuntimeManifest:
         contract_result = self.contract_loader.load_agent_contracts()
@@ -59,6 +251,7 @@ class RuntimeContainer:
         governance = self.governance or GovernanceService.local_fallback(ledger=self.planner.ledger)
         governance_summary = governance.manifest_summary()
         separation_of_duties_summary = governance.separation_of_duties_manifest_summary()
+        external_approval_enforcement_summary = governance.external_approval_enforcement_manifest_summary()
         canonical_capabilities = self.contract_loader.load_agent_capabilities()
         capabilities = canonical_capabilities or default_capabilities()
         discovery_result = self.capability_discovery.discover(canonical_capabilities)
@@ -105,6 +298,17 @@ class RuntimeContainer:
             supported_execution_capabilities=discovery_result.supported_execution_capabilities,
             ledger_support_level="local_json_file_backed",
             ledger_storage=self.planner.ledger.diagnostics(),
+            ledger_integrity_support_level=self.planner.ledger.diagnostics().get(
+                "integrity_support_level",
+                "not_available",
+            ),
+            support_bundle_support_level=SUPPORT_BUNDLE_SUPPORT_LEVEL,
+            external_approval_support_level=EXTERNAL_APPROVAL_SUPPORT_LEVEL,
+            external_approval_decision_support_level=EXTERNAL_APPROVAL_DECISION_SUPPORT_LEVEL,
+            external_approval_enforcement_support_level=EXTERNAL_APPROVAL_ENFORCEMENT_SUPPORT_LEVEL,
+            external_approval_submission_support_level=EXTERNAL_APPROVAL_SUBMISSION_SUPPORT_LEVEL,
+            external_approval_submission_status_support_level=EXTERNAL_APPROVAL_SUBMISSION_STATUS_SUPPORT_LEVEL,
+            external_approval_submission_adapter=external_approval_submission_adapter_status(),
             recovery_support_level="manual_pause_resume_only",
             orchestration_support_level="manual_guided_existing_steps_only",
             retry_support_level="manual_current_step_only",
@@ -116,6 +320,8 @@ class RuntimeContainer:
             demo_narrative_support_level="sample_owned_ledger_narrative_only",
             governance_support_level=governance.support_level,
             separation_of_duties_support_level=governance.separation_of_duties_support_level,
+            environment_policy_pack_support_level=ENVIRONMENT_POLICY_PACK_SUPPORT_LEVEL,
+            release_evidence_support_level=RELEASE_EVIDENCE_SUPPORT_LEVEL,
             user_workflow_support_level="manual_user_owned_consent_gate_only",
             user_plan_approval_support_level="manual_active_plan_approval_only",
             plan_only_support_level="supported",
@@ -137,6 +343,7 @@ class RuntimeContainer:
             provider_status=provider_status,
             governance_summary=governance_summary,
             separation_of_duties_summary=separation_of_duties_summary,
+            external_approval_enforcement_summary=external_approval_enforcement_summary,
             safety_boundaries=[
                 "single_step_review_draft_execution_only",
                 "no_generic_execution",
@@ -154,6 +361,10 @@ def _contract_version_from_name(name: str) -> str:
     if name.endswith(".schema.json"):
         return name.removesuffix(".schema.json")
     return name
+
+
+def _utc_now_label() -> str:
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def build_runtime() -> RuntimeContainer:
@@ -227,6 +438,16 @@ def build_runtime() -> RuntimeContainer:
     )
     demo_narrative = DemoNarrativeService(ledger=ledger)
     user_workflow = UserWorkflowService(ledger=ledger)
+    external_approval = ExternalApprovalService(
+        ledger=ledger,
+        contract_loader=contract_loader,
+        governance=governance,
+    )
+    external_approval_submission = ExternalApprovalSubmissionService(
+        ledger=ledger,
+        contract_loader=contract_loader,
+        governance=governance,
+    )
     return RuntimeContainer(
         planner=planner,
         preflight=preflight,
@@ -248,6 +469,8 @@ def build_runtime() -> RuntimeContainer:
         capability_discovery=capability_discovery,
         provider_status=provider_status,
         governance=governance,
+        external_approval=external_approval,
+        external_approval_submission=external_approval_submission,
     )
 
 

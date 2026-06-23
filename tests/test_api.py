@@ -759,6 +759,16 @@ def _expected_user_owned_phase8_certification_fixture() -> dict[str, Any]:
     return json.loads(fixture_path.read_text(encoding="utf-8"))
 
 
+def _expected_phase9_governance_certification_fixture() -> dict[str, Any]:
+    fixture_path = (
+        QUANT_SUITE_ROOT
+        / "fixtures"
+        / "agent_certification"
+        / "phase9_governance_expected_evidence.json.fixture"
+    )
+    return json.loads(fixture_path.read_text(encoding="utf-8"))
+
+
 def _assert_safe_ledger_export_text(serialized: str) -> None:
     for unsafe_term in [
         "C:\\",
@@ -818,6 +828,7 @@ def _write_governance_policy_pack(
     allowed_capability_ids: list[str] | None = None,
     denied_capability_ids: list[str] | None = None,
     separation_of_duties_rules: list[dict[str, Any]] | None = None,
+    external_approval_rules: list[dict[str, Any]] | None = None,
 ) -> None:
     payload = {
         "schema_version": "1.0",
@@ -858,6 +869,7 @@ def _write_governance_policy_pack(
             "unknown_role": "allow_existing_local_behavior_with_diagnostics",
         },
         "separation_of_duties_rules": separation_of_duties_rules or [],
+        "external_approval_rules": external_approval_rules or [],
     }
     path.write_text(json.dumps(payload), encoding="utf-8")
 
@@ -873,6 +885,27 @@ def _blocking_sod_rule(*, exempt_roles: list[str] | None = None) -> dict[str, An
     }
 
 
+def _blocking_external_approval_rule(
+    *,
+    enforcement_mode: str = "blocking",
+    exempt_roles: list[str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "rule_id": "draft_action_external_approval_gate",
+        "display_name": "Draft action external approval gate",
+        "description": "Governed draft execution and retry require external approval evidence.",
+        "enforcement_mode": enforcement_mode,
+        "protected_routes": ["POST /executions", "POST /retries"],
+        "protected_capability_ids": [
+            "quant_studio.prepare_model_config_draft",
+            "quant_documentation.create_draft_workspace",
+        ],
+        "accepted_decision_statuses": ["approved"],
+        "allowed_scopes": ["run", "step"],
+        "exempt_roles": exempt_roles or [],
+    }
+
+
 def _prepare_user_owned_studio_execution(
     client: TestClient,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -883,6 +916,22 @@ def _prepare_user_owned_studio_execution(
     _run_source_preflight(client, plan_payload)
     studio_step, _preview = _create_studio_preview(client, plan_payload)
     return plan_payload, studio_step
+
+
+def _client_for_governance_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    ledger: InMemoryLedger,
+    app_client: FakePreflightAppClient,
+    environment: str,
+    actor_role: str,
+    actor_id: str,
+) -> TestClient:
+    monkeypatch.delenv("QUANT_AGENT_GOVERNANCE_POLICY_PACK_PATH", raising=False)
+    monkeypatch.setenv("QUANT_AGENT_GOVERNANCE_ENVIRONMENT", environment)
+    monkeypatch.setenv("QUANT_AGENT_ACTOR_ROLE", actor_role)
+    monkeypatch.setenv("QUANT_AGENT_ACTOR_ID", actor_id)
+    return TestClient(create_app(runtime_with_preflight_client(app_client, ledger=ledger)))
 
 
 def _run_source_preflight(client: TestClient, plan_payload: dict[str, Any]) -> dict[str, Any]:
@@ -1043,7 +1092,10 @@ def test_health_endpoint_works() -> None:
     assert response.json()["execution_support_level"] == "single_step_review_draft_actions_only"
 
 
-def test_runtime_manifest_returns_supported_modes() -> None:
+def test_runtime_manifest_returns_supported_modes(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("QUANT_AGENT_GOVERNANCE_POLICY_PACK_PATH", raising=False)
+    monkeypatch.delenv("QUANT_AGENT_GOVERNANCE_ENVIRONMENT", raising=False)
+    monkeypatch.delenv("QUANT_AGENT_ACTOR_ROLE", raising=False)
     client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
 
     response = client.get("/runtime/manifest")
@@ -1079,6 +1131,10 @@ def test_runtime_manifest_returns_supported_modes() -> None:
     assert "POST /user-plan-approvals" in manifest["supported_routes"]
     assert "POST /user-workflow-readiness" in manifest["supported_routes"]
     assert "POST /user-workflow-consents" in manifest["supported_routes"]
+    assert "POST /external-approval-requests" in manifest["supported_routes"]
+    assert "POST /external-approval-submissions" in manifest["supported_routes"]
+    assert "POST /external-approval-decisions" in manifest["supported_routes"]
+    assert "GET /runs/{run_id}/external-approval-submissions" in manifest["supported_routes"]
     assert manifest["runtime_health_endpoint"] == "/health"
     assert manifest["execution_support_level"] == "single_step_review_draft_actions_only"
     assert manifest["ledger_support_level"] == "local_json_file_backed"
@@ -1091,7 +1147,19 @@ def test_runtime_manifest_returns_supported_modes() -> None:
     assert manifest["autopilot_support_level"] == "sample_owned_one_step_manual_advance"
     assert manifest["sample_reset_support_level"] == "sample_owned_studio_orchestrated_only"
     assert manifest["demo_narrative_support_level"] == "sample_owned_ledger_narrative_only"
+    assert manifest["external_approval_support_level"] == "manual_approval_package_preview_only"
+    assert manifest["external_approval_decision_support_level"] == "manual_decision_import_only"
+    assert manifest["external_approval_enforcement_support_level"] == "policy_required_decision_enforced"
+    assert manifest["external_approval_submission_support_level"] == "local_outbox_submission_only"
+    assert manifest["external_approval_submission_status_support_level"] == (
+        "ledger_and_local_outbox_status"
+    )
+    assert manifest["external_approval_submission_adapter"]["adapter_mode"] == "local_outbox"
+    assert manifest["external_approval_submission_adapter"]["enabled"] is True
+    assert manifest["external_approval_submission_adapter"]["supports_external_network"] is False
     assert manifest["governance_support_level"] == "role_aware_policy_pack_enforced"
+    assert manifest["environment_policy_pack_support_level"] == "suite_fixture_environment_selection"
+    assert manifest["release_evidence_support_level"] == "contract_policy_redaction_checks"
     assert manifest["user_workflow_support_level"] == "manual_user_owned_consent_gate_only"
     assert manifest["user_plan_approval_support_level"] == "manual_active_plan_approval_only"
     assert manifest["ledger_storage"]["storage_mode"] == "memory"
@@ -1128,11 +1196,108 @@ def test_runtime_manifest_returns_supported_modes() -> None:
     governance = manifest["governance_summary"]
     assert governance["policy_pack_id"] == "quant_agent_local_governance_policy_pack_v1"
     assert governance["environment"] == "local_development"
+    assert governance["environment_policy_pack_support_level"] == "suite_fixture_environment_selection"
+    assert governance["release_evidence_support_level"] == "contract_policy_redaction_checks"
+    assert governance["source"].endswith(":environment_policy_pack_fixture")
     assert governance["actor_role"] == "local_developer_operator"
     assert governance["effective_actor_role"] == "local_developer_operator"
     assert governance["fallback_active"] is False
     assert "*" in governance["allowed_routes"]
     assert "*" in governance["allowed_capability_ids"]
+    enforcement = manifest["external_approval_enforcement_summary"]
+    assert enforcement["support_level"] == "policy_required_decision_enforced"
+    assert "POST /executions" in enforcement["protected_routes"]
+    assert "quant_studio.prepare_model_config_draft" in enforcement["protected_capability_ids"]
+    assert enforcement["blocked"] is False
+
+
+def test_governance_selects_team_staging_environment_policy_pack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("QUANT_AGENT_GOVERNANCE_POLICY_PACK_PATH", raising=False)
+    monkeypatch.delenv("QUANT_AGENT_ACTOR_ROLE", raising=False)
+    monkeypatch.setenv("QUANT_AGENT_GOVERNANCE_ENVIRONMENT", "team_staging")
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
+
+    manifest = client.get("/runtime/manifest").json()
+
+    governance = manifest["governance_summary"]
+    assert governance["policy_pack_id"] == "quant_agent_team_staging_governance_policy_pack_v1"
+    assert governance["environment"] == "team_staging"
+    assert governance["actor_role"] == "approver"
+    assert governance["effective_actor_role"] == "approver"
+    assert governance["fallback_active"] is False
+    assert governance["source"].endswith(":environment_policy_pack_fixture")
+    assert "POST /plans" in governance["allowed_routes"]
+    assert "POST /executions" in governance["denied_routes"]
+    assert "quant_studio.prepare_model_config_draft" in governance["allowed_capability_ids"]
+    enforcement = manifest["external_approval_enforcement_summary"]
+    assert "draft_action_external_approval_gate" in enforcement["blocking_rule_ids"]
+    assert "POST /retries" in enforcement["protected_routes"]
+
+
+def test_governance_regulated_review_defaults_to_viewer_denials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("QUANT_AGENT_GOVERNANCE_POLICY_PACK_PATH", raising=False)
+    monkeypatch.delenv("QUANT_AGENT_ACTOR_ROLE", raising=False)
+    monkeypatch.setenv("QUANT_AGENT_GOVERNANCE_ENVIRONMENT", "regulated_review")
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
+
+    manifest = client.get("/runtime/manifest").json()
+    denied_response = client.post(
+        "/plans",
+        json={"user_goal": "Plan in regulated review.", "context_summary": _safe_lifecycle_context()},
+    )
+
+    governance = manifest["governance_summary"]
+    assert governance["policy_pack_id"] == "quant_agent_regulated_review_governance_policy_pack_v1"
+    assert governance["actor_role"] == "viewer"
+    assert "GET /runs/{run_id}/support-bundle" in governance["allowed_routes"]
+    assert "POST /plans" in governance["denied_routes"]
+    assert denied_response.status_code == 422
+    assert denied_response.json()["detail"]["errors"][0]["code"] == "governance_permission_denied"
+
+
+def test_governance_explicit_policy_path_overrides_environment_fixture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    policy_path = tmp_path / "governance_policy_pack.json"
+    _write_governance_policy_pack(policy_path, role_id="path_operator")
+    monkeypatch.setenv("QUANT_AGENT_GOVERNANCE_POLICY_PACK_PATH", str(policy_path))
+    monkeypatch.setenv("QUANT_AGENT_GOVERNANCE_ENVIRONMENT", "regulated_review")
+    monkeypatch.delenv("QUANT_AGENT_ACTOR_ROLE", raising=False)
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
+
+    manifest = client.get("/runtime/manifest").json()
+
+    governance = manifest["governance_summary"]
+    assert governance["policy_pack_id"] == "test_governance_policy_pack"
+    assert governance["environment"] == "regulated_review"
+    assert governance["actor_role"] == "path_operator"
+    assert governance["source"] == "QUANT_AGENT_GOVERNANCE_POLICY_PACK_PATH"
+
+
+def test_governance_unknown_environment_uses_canonical_example_with_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("QUANT_AGENT_GOVERNANCE_POLICY_PACK_PATH", raising=False)
+    monkeypatch.delenv("QUANT_AGENT_ACTOR_ROLE", raising=False)
+    monkeypatch.setenv("QUANT_AGENT_GOVERNANCE_ENVIRONMENT", "unknown_review_env")
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
+
+    manifest = client.get("/runtime/manifest").json()
+
+    governance = manifest["governance_summary"]
+    assert governance["policy_pack_id"] == "quant_agent_local_governance_policy_pack_v1"
+    assert governance["environment"] == "unknown_review_env"
+    assert governance["fallback_active"] is False
+    assert governance["source"] in {"configured_path", "sibling_quant_suite", "QUANT_SUITE_ROOT"}
+    assert any(
+        item.get("code") == "environment_policy_pack_not_found"
+        for item in governance["diagnostics"]
+    )
 
 
 def test_governance_viewer_can_read_but_mutating_routes_are_denied_and_ledgeder(
@@ -2523,6 +2688,14 @@ def test_file_backed_ledger_persists_plan_and_exposes_safe_ledger(tmp_path: Path
     assert len(ledger_files) == 1
     stored_payload = json.loads(ledger_files[0].read_text(encoding="utf-8"))
     assert stored_payload["run_id"] == plan_payload["run_id"]
+    assert stored_payload["ledger_integrity"]["status"] == "verified"
+    assert stored_payload["ledger_integrity"]["algorithm"] == "sha256"
+    assert stored_payload["ledger_integrity"]["sequence_number"] == 1
+    journal_files = list((tmp_path / "integrity_journals").glob("*.jsonl"))
+    assert len(journal_files) == 1
+    assert stored_payload["ledger_integrity"]["payload_hash"] in journal_files[0].read_text(
+        encoding="utf-8"
+    )
     loader.validate_agent_contract_payload(stored_payload, "agent_execution_ledger.v1.schema.json")
 
     ledger_response = client.get(f"/runs/{plan_payload['run_id']}/ledger")
@@ -2532,7 +2705,1782 @@ def test_file_backed_ledger_persists_plan_and_exposes_safe_ledger(tmp_path: Path
     assert exported["data_policy"] == "summaries_and_references_only"
     assert str(tmp_path) not in ledger_response.text
     assert "raw_path" not in ledger_response.text
+    assert exported["ledger_integrity"]["status"] == "verified"
     loader.validate_agent_contract_payload(exported, "agent_execution_ledger.v1.schema.json")
+
+    status_response = client.get(f"/runs/{plan_payload['run_id']}")
+    assert status_response.status_code == 200
+    assert status_response.json()["ledger_integrity_summary"]["status"] == "verified"
+
+    support_response = client.get(f"/runs/{plan_payload['run_id']}/support-bundle")
+    assert support_response.status_code == 200
+    support_bundle = support_response.json()
+    assert support_bundle["run_id"] == plan_payload["run_id"]
+    assert support_bundle["ledger_integrity_summary"]["status"] == "verified"
+    assert support_bundle["redaction_report"]["raw_payloads_included"] is False
+    dumped_bundle = json.dumps(support_bundle, sort_keys=True)
+    assert str(tmp_path) not in dumped_bundle
+    assert '"raw_path"' not in dumped_bundle
+    assert "OPENAI_API_KEY" not in dumped_bundle
+    assert "provider_prompt" not in dumped_bundle
+    assert '"provider_response"' not in dumped_bundle
+    loader.validate_agent_contract_payload(support_bundle, "agent_support_bundle.v1.schema.json")
+
+
+def test_file_backed_ledger_loads_legacy_entries_as_unverified(tmp_path: Path) -> None:
+    loader = QuantSuiteContractLoader(QUANT_SUITE_ROOT)
+    ledger = FileBackedLedger(
+        tmp_path,
+        validate_contract=loader.validate_agent_contract_payload,
+    )
+    runtime = runtime_with_preflight_client(FakePreflightAppClient(), ledger=ledger)
+    client = TestClient(create_app(runtime))
+    plan_payload = _create_plan_with_lifecycle_reference(client)
+    ledger_file = next(tmp_path.glob("*.json"))
+    payload = json.loads(ledger_file.read_text(encoding="utf-8"))
+    payload.pop("ledger_integrity", None)
+    ledger_file.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    reloaded = FileBackedLedger(
+        tmp_path,
+        validate_contract=loader.validate_agent_contract_payload,
+    )
+
+    entry = reloaded.get(plan_payload["run_id"])
+    assert entry is not None
+    assert entry.ledger_integrity is not None
+    assert entry.ledger_integrity.status == "legacy_unverified"
+    diagnostics = reloaded.diagnostics()
+    assert diagnostics["loaded_entry_count"] == 1
+    assert diagnostics["legacy_unverified_entry_count"] == 1
+    assert diagnostics["invalid_entry_count"] == 0
+
+
+def test_file_backed_ledger_ignores_tampered_integrity_payload(tmp_path: Path) -> None:
+    loader = QuantSuiteContractLoader(QUANT_SUITE_ROOT)
+    ledger = FileBackedLedger(
+        tmp_path,
+        validate_contract=loader.validate_agent_contract_payload,
+    )
+    runtime = runtime_with_preflight_client(FakePreflightAppClient(), ledger=ledger)
+    client = TestClient(create_app(runtime))
+    plan_payload = _create_plan_with_lifecycle_reference(client)
+    ledger_file = next(tmp_path.glob("*.json"))
+    payload = json.loads(ledger_file.read_text(encoding="utf-8"))
+    payload["user_goal_summary"] = "Tampered but schema-compatible summary."
+    ledger_file.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    reloaded = FileBackedLedger(
+        tmp_path,
+        validate_contract=loader.validate_agent_contract_payload,
+    )
+
+    assert reloaded.get(plan_payload["run_id"]) is None
+    diagnostics = reloaded.diagnostics()
+    assert diagnostics["loaded_entry_count"] == 0
+    assert diagnostics["invalid_entry_count"] == 1
+    assert diagnostics["tampered_entry_count"] == 1
+
+
+def test_support_bundle_route_is_readable_for_viewer_role(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loader = QuantSuiteContractLoader(QUANT_SUITE_ROOT)
+    ledger = FileBackedLedger(
+        tmp_path,
+        validate_contract=loader.validate_agent_contract_payload,
+    )
+    local_runtime = runtime_with_preflight_client(FakePreflightAppClient(), ledger=ledger)
+    local_client = TestClient(create_app(local_runtime))
+    plan_payload = _create_plan_with_lifecycle_reference(local_client)
+
+    monkeypatch.setenv("QUANT_AGENT_ACTOR_ROLE", "viewer")
+    viewer_runtime = runtime_with_preflight_client(FakePreflightAppClient(), ledger=ledger)
+    viewer_client = TestClient(create_app(viewer_runtime))
+
+    support_response = viewer_client.get(f"/runs/{plan_payload['run_id']}/support-bundle")
+    assert support_response.status_code == 200
+    assert support_response.json()["governance_summary"]["effective_actor_role"] == "viewer"
+    denied_response = viewer_client.post(
+        "/pauses",
+        json={
+            "run_id": plan_payload["run_id"],
+            "pause_intent": "pause_run",
+            "reason": "user_paused",
+        },
+    )
+    assert denied_response.status_code == 422
+    assert denied_response.json()["detail"]["errors"][0]["code"] == "governance_permission_denied"
+
+
+def test_external_approval_request_preview_validates_and_ledgers_idempotently(
+    tmp_path: Path,
+) -> None:
+    loader = QuantSuiteContractLoader(QUANT_SUITE_ROOT)
+    ledger = FileBackedLedger(
+        tmp_path,
+        validate_contract=loader.validate_agent_contract_payload,
+    )
+    runtime = runtime_with_preflight_client(FakePreflightAppClient(), ledger=ledger)
+    client = TestClient(create_app(runtime))
+    plan_payload = _create_plan_with_lifecycle_reference(client)
+    studio_step = _step_for_capability(
+        plan_payload,
+        "quant_studio.prepare_model_config_draft",
+    )
+
+    run_response = client.post(
+        "/external-approval-requests",
+        json={
+            "run_id": plan_payload["run_id"],
+            "approval_intent": "preview_external_approval_request",
+            "approval_scope": "run",
+            "step_id": None,
+        },
+    )
+    assert run_response.status_code == 200
+    run_payload = run_response.json()
+    run_package = run_payload["approval_request"]
+    assert run_payload["run_id"] == plan_payload["run_id"]
+    assert run_package["approval_scope"] == "run"
+    assert run_package["external_submission_status"] == "not_submitted"
+    assert run_package["support_bundle_reference"]["reference_type"] == "agent_support_bundle"
+    assert run_package["redaction_report"]["raw_payloads_included"] is False
+    loader.validate_agent_contract_payload(
+        run_package,
+        "agent_external_approval_request.v1.schema.json",
+    )
+
+    step_response = client.post(
+        "/external-approval-requests",
+        json={
+            "run_id": plan_payload["run_id"],
+            "approval_intent": "preview_external_approval_request",
+            "approval_scope": "step",
+            "step_id": studio_step["step_id"],
+        },
+    )
+    assert step_response.status_code == 200
+    step_package = step_response.json()["approval_request"]
+    assert step_package["approval_scope"] == "step"
+    assert step_package["step_id"] == studio_step["step_id"]
+    assert step_package["capability_id"] == "quant_studio.prepare_model_config_draft"
+    loader.validate_agent_contract_payload(
+        step_package,
+        "agent_external_approval_request.v1.schema.json",
+    )
+
+    duplicate_response = client.post(
+        "/external-approval-requests",
+        json={
+            "run_id": plan_payload["run_id"],
+            "approval_intent": "preview_external_approval_request",
+            "approval_scope": "step",
+            "step_id": studio_step["step_id"],
+        },
+    )
+    assert duplicate_response.status_code == 200
+    assert duplicate_response.json()["approval_request"]["approval_request_id"] == (
+        step_package["approval_request_id"]
+    )
+
+    entry = ledger.get(plan_payload["run_id"])
+    assert entry is not None
+    approval_events = [
+        event
+        for event in entry.recovery_events
+        if event.get("event_type") == "external_approval_request_preview"
+    ]
+    assert len(approval_events) == 2
+    loader.validate_agent_contract_payload(
+        entry.model_dump(mode="json"),
+        "agent_execution_ledger.v1.schema.json",
+    )
+    dumped_package = json.dumps(step_package, sort_keys=True)
+    assert str(tmp_path) not in dumped_package
+    assert "OPENAI_API_KEY" not in dumped_package
+    assert "provider_prompt" not in dumped_package
+    assert '"provider_response"' not in dumped_package
+
+
+def test_external_approval_request_preview_governance_denies_viewer_and_executor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loader = QuantSuiteContractLoader(QUANT_SUITE_ROOT)
+    ledger = FileBackedLedger(
+        tmp_path,
+        validate_contract=loader.validate_agent_contract_payload,
+    )
+    operator_runtime = runtime_with_preflight_client(FakePreflightAppClient(), ledger=ledger)
+    operator_client = TestClient(create_app(operator_runtime))
+    plan_payload = _create_plan_with_lifecycle_reference(operator_client)
+
+    for role in ["viewer", "executor"]:
+        monkeypatch.setenv("QUANT_AGENT_ACTOR_ROLE", role)
+        restricted_runtime = runtime_with_preflight_client(FakePreflightAppClient(), ledger=ledger)
+        restricted_client = TestClient(create_app(restricted_runtime))
+        response = restricted_client.post(
+            "/external-approval-requests",
+            json={
+                "run_id": plan_payload["run_id"],
+                "approval_intent": "preview_external_approval_request",
+                "approval_scope": "run",
+                "step_id": None,
+            },
+        )
+        assert response.status_code == 422
+        assert response.json()["detail"]["errors"][0]["code"] == "governance_permission_denied"
+
+    ledger_payload = operator_client.get(f"/runs/{plan_payload['run_id']}/ledger").json()
+    denial_events = [
+        event
+        for event in ledger_payload["recovery_events"]
+        if event.get("event_type") == "governance_permission_denied"
+    ]
+    assert {event["actor_role"] for event in denial_events} == {"viewer", "executor"}
+
+
+def test_external_approval_request_preview_allows_approver_role(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loader = QuantSuiteContractLoader(QUANT_SUITE_ROOT)
+    ledger = FileBackedLedger(
+        tmp_path,
+        validate_contract=loader.validate_agent_contract_payload,
+    )
+    operator_runtime = runtime_with_preflight_client(FakePreflightAppClient(), ledger=ledger)
+    operator_client = TestClient(create_app(operator_runtime))
+    plan_payload = _create_plan_with_lifecycle_reference(operator_client)
+
+    monkeypatch.setenv("QUANT_AGENT_ACTOR_ROLE", "approver")
+    approver_runtime = runtime_with_preflight_client(FakePreflightAppClient(), ledger=ledger)
+    approver_client = TestClient(create_app(approver_runtime))
+    response = approver_client.post(
+        "/external-approval-requests",
+        json={
+            "run_id": plan_payload["run_id"],
+            "approval_intent": "preview_external_approval_request",
+            "approval_scope": "run",
+            "step_id": None,
+        },
+    )
+
+    assert response.status_code == 200
+    approval_request = response.json()["approval_request"]
+    assert approval_request["requester"]["effective_actor_role"] == "approver"
+    loader.validate_agent_contract_payload(
+        approval_request,
+        "agent_external_approval_request.v1.schema.json",
+    )
+
+
+def test_external_approval_request_preview_rejects_unknown_terminal_and_bad_requests(
+    tmp_path: Path,
+) -> None:
+    loader = QuantSuiteContractLoader(QUANT_SUITE_ROOT)
+    ledger = FileBackedLedger(
+        tmp_path,
+        validate_contract=loader.validate_agent_contract_payload,
+    )
+    runtime = runtime_with_preflight_client(FakePreflightAppClient(), ledger=ledger)
+    client = TestClient(create_app(runtime))
+    plan_payload = _create_plan_with_lifecycle_reference(client)
+
+    missing_run = client.post(
+        "/external-approval-requests",
+        json={
+            "run_id": "run_missing",
+            "approval_intent": "preview_external_approval_request",
+            "approval_scope": "run",
+            "step_id": None,
+        },
+    )
+    assert missing_run.status_code == 422
+    assert missing_run.json()["detail"]["errors"][0]["code"] == "unknown_run"
+
+    unknown_step = client.post(
+        "/external-approval-requests",
+        json={
+            "run_id": plan_payload["run_id"],
+            "approval_intent": "preview_external_approval_request",
+            "approval_scope": "step",
+            "step_id": "step_missing",
+        },
+    )
+    assert unknown_step.status_code == 422
+    assert unknown_step.json()["detail"]["errors"][0]["code"] == "unknown_step"
+
+    extra_field = client.post(
+        "/external-approval-requests",
+        json={
+            "run_id": plan_payload["run_id"],
+            "approval_intent": "preview_external_approval_request",
+            "approval_scope": "run",
+            "step_id": None,
+            "execution_permitted": True,
+        },
+    )
+    assert extra_field.status_code == 422
+
+    cancellation = client.post(
+        "/cancellations",
+        json={
+            "run_id": plan_payload["run_id"],
+            "cancellation_intent": "cancel_run",
+            "reason": "user_cancelled",
+        },
+    )
+    assert cancellation.status_code == 200
+    terminal_response = client.post(
+        "/external-approval-requests",
+        json={
+            "run_id": plan_payload["run_id"],
+            "approval_intent": "preview_external_approval_request",
+            "approval_scope": "run",
+            "step_id": None,
+        },
+    )
+    assert terminal_response.status_code == 422
+    assert terminal_response.json()["detail"]["errors"][0]["code"] == (
+        "terminal_run_external_approval_request"
+    )
+
+
+def _external_approval_decision(
+    approval_request: dict[str, Any],
+    *,
+    decision_status: str = "approved",
+    decision_id: str | None = None,
+) -> dict[str, Any]:
+    approval_request_id = str(approval_request["approval_request_id"])
+    return {
+        "schema_version": "1.0",
+        "data_policy": "summaries_and_references_only",
+        "approval_decision_id": decision_id or f"decision_{approval_request_id}_{decision_status}",
+        "approval_request_id": approval_request_id,
+        "run_id": approval_request["run_id"],
+        "step_id": approval_request.get("step_id"),
+        "capability_id": approval_request.get("capability_id"),
+        "decision_status": decision_status,
+        "decided_by": {
+            "actor_id": "external_approver",
+            "actor_role": "approver",
+        },
+        "decided_at_utc": "2026-06-23T12:00:00Z",
+        "decision_summary": {
+            "summary": f"Manual external approval decision is {decision_status}.",
+            "advisory_only": True,
+        },
+        "evidence_references": [
+            {
+                "reference_type": "external_approval_request",
+                "reference_id": approval_request_id,
+                "summary": "Decision references the redacted approval request package.",
+            }
+        ],
+        "redaction_report": {
+            "data_policy": "summaries_and_references_only",
+            "raw_payloads_included": False,
+            "unsafe_issue_count": 0,
+        },
+        "validation": {
+            "status": "valid",
+            "errors": [],
+            "warnings": [],
+        },
+        "execution_permitted": False,
+    }
+
+
+def test_external_approval_decision_import_validates_ledgers_and_is_advisory(
+    tmp_path: Path,
+) -> None:
+    loader = QuantSuiteContractLoader(QUANT_SUITE_ROOT)
+    ledger = FileBackedLedger(
+        tmp_path,
+        validate_contract=loader.validate_agent_contract_payload,
+    )
+    runtime = runtime_with_preflight_client(FakePreflightAppClient(), ledger=ledger)
+    client = TestClient(create_app(runtime))
+    plan_payload = _create_plan_with_lifecycle_reference(client)
+    studio_step = _step_for_capability(plan_payload, "quant_studio.prepare_model_config_draft")
+
+    run_preview = client.post(
+        "/external-approval-requests",
+        json={
+            "run_id": plan_payload["run_id"],
+            "approval_intent": "preview_external_approval_request",
+            "approval_scope": "run",
+            "step_id": None,
+        },
+    )
+    assert run_preview.status_code == 200
+    step_preview = client.post(
+        "/external-approval-requests",
+        json={
+            "run_id": plan_payload["run_id"],
+            "approval_intent": "preview_external_approval_request",
+            "approval_scope": "step",
+            "step_id": studio_step["step_id"],
+        },
+    )
+    assert step_preview.status_code == 200
+
+    run_request = run_preview.json()["approval_request"]
+    step_request = step_preview.json()["approval_request"]
+    imported_statuses: list[str] = []
+    for index, decision_status in enumerate(["approved", "rejected", "needs_changes", "expired"], start=1):
+        approval_request = run_request if decision_status in {"approved", "expired"} else step_request
+        decision = _external_approval_decision(
+            approval_request,
+            decision_status=decision_status,
+            decision_id=f"decision_{index}_{decision_status}",
+        )
+        response = client.post(
+            "/external-approval-decisions",
+            json={
+                "run_id": plan_payload["run_id"],
+                "decision_intent": "import_external_approval_decision",
+                "approval_decision": decision,
+            },
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        imported_statuses.append(payload["approval_decision"]["decision_status"])
+        assert payload["approval_request_id"] == approval_request["approval_request_id"]
+        assert payload["external_approval_summary"]["enforcement_mode"] == "advisory_only"
+        assert payload["external_approval_summary"]["execution_permitted"] is False
+        assert payload["run_status"]["external_approval_summary"]["decision_count"] == index
+        assert payload["orchestration"]["external_approval_summary"]["decision_count"] == index
+        loader.validate_agent_contract_payload(
+            payload["approval_decision"],
+            "agent_external_approval_decision.v1.schema.json",
+        )
+
+    assert imported_statuses == ["approved", "rejected", "needs_changes", "expired"]
+    status_response = client.get(f"/runs/{plan_payload['run_id']}")
+    assert status_response.status_code == 200
+    assert status_response.json()["external_approval_summary"]["decision_count"] == 4
+    assert status_response.json()["external_approval_summary"]["status"] == "expired"
+    orchestration_response = client.get(f"/runs/{plan_payload['run_id']}/orchestration")
+    assert orchestration_response.status_code == 200
+    assert orchestration_response.json()["external_approval_summary"]["decision_count"] == 4
+
+    entry = ledger.get(plan_payload["run_id"])
+    assert entry is not None
+    decision_events = [
+        event
+        for event in entry.recovery_events
+        if event.get("event_type") == "external_approval_decision_import"
+    ]
+    assert len(decision_events) == 4
+    assert all(event["execution_permitted"] is False for event in decision_events)
+    assert all(event["advisory_only"] is True for event in decision_events)
+    loader.validate_agent_contract_payload(
+        entry.model_dump(mode="json"),
+        "agent_execution_ledger.v1.schema.json",
+    )
+    dumped_ledger = json.dumps(entry.model_dump(mode="json"), sort_keys=True)
+    assert str(tmp_path) not in dumped_ledger
+    assert "OPENAI_API_KEY" not in dumped_ledger
+    assert "provider_prompt" not in dumped_ledger
+    assert '"provider_response"' not in dumped_ledger
+
+
+def test_external_approval_decision_import_is_idempotent_and_rejects_conflicts(
+    tmp_path: Path,
+) -> None:
+    loader = QuantSuiteContractLoader(QUANT_SUITE_ROOT)
+    ledger = FileBackedLedger(
+        tmp_path,
+        validate_contract=loader.validate_agent_contract_payload,
+    )
+    runtime = runtime_with_preflight_client(FakePreflightAppClient(), ledger=ledger)
+    client = TestClient(create_app(runtime))
+    plan_payload = _create_plan_with_lifecycle_reference(client)
+    preview = client.post(
+        "/external-approval-requests",
+        json={
+            "run_id": plan_payload["run_id"],
+            "approval_intent": "preview_external_approval_request",
+            "approval_scope": "run",
+            "step_id": None,
+        },
+    )
+    assert preview.status_code == 200
+    approval_request = preview.json()["approval_request"]
+    decision = _external_approval_decision(
+        approval_request,
+        decision_status="approved",
+        decision_id="decision_idempotent",
+    )
+    first = client.post(
+        "/external-approval-decisions",
+        json={
+            "run_id": plan_payload["run_id"],
+            "decision_intent": "import_external_approval_decision",
+            "approval_decision": decision,
+        },
+    )
+    second = client.post(
+        "/external-approval-decisions",
+        json={
+            "run_id": plan_payload["run_id"],
+            "decision_intent": "import_external_approval_decision",
+            "approval_decision": decision,
+        },
+    )
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["approval_decision"]["approval_decision_id"] == "decision_idempotent"
+
+    conflict = copy.deepcopy(decision)
+    conflict["decision_summary"]["summary"] = "Conflicting decision text."
+    conflict_response = client.post(
+        "/external-approval-decisions",
+        json={
+            "run_id": plan_payload["run_id"],
+            "decision_intent": "import_external_approval_decision",
+            "approval_decision": conflict,
+        },
+    )
+    assert conflict_response.status_code == 422
+    assert conflict_response.json()["detail"]["errors"][0]["code"] == (
+        "conflicting_external_approval_decision"
+    )
+    entry = ledger.get(plan_payload["run_id"])
+    assert entry is not None
+    assert [
+        event.get("event_type")
+        for event in entry.recovery_events
+        if event.get("event_type") == "external_approval_decision_import"
+    ] == ["external_approval_decision_import"]
+
+
+def test_external_approval_decision_import_governance_denies_viewer_and_executor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loader = QuantSuiteContractLoader(QUANT_SUITE_ROOT)
+    ledger = FileBackedLedger(
+        tmp_path,
+        validate_contract=loader.validate_agent_contract_payload,
+    )
+    operator_runtime = runtime_with_preflight_client(FakePreflightAppClient(), ledger=ledger)
+    operator_client = TestClient(create_app(operator_runtime))
+    plan_payload = _create_plan_with_lifecycle_reference(operator_client)
+    preview = operator_client.post(
+        "/external-approval-requests",
+        json={
+            "run_id": plan_payload["run_id"],
+            "approval_intent": "preview_external_approval_request",
+            "approval_scope": "run",
+            "step_id": None,
+        },
+    )
+    assert preview.status_code == 200
+    decision = _external_approval_decision(preview.json()["approval_request"])
+
+    for role in ["viewer", "executor"]:
+        monkeypatch.setenv("QUANT_AGENT_ACTOR_ROLE", role)
+        restricted_runtime = runtime_with_preflight_client(FakePreflightAppClient(), ledger=ledger)
+        restricted_client = TestClient(create_app(restricted_runtime))
+        response = restricted_client.post(
+            "/external-approval-decisions",
+            json={
+                "run_id": plan_payload["run_id"],
+                "decision_intent": "import_external_approval_decision",
+                "approval_decision": decision,
+            },
+        )
+        assert response.status_code == 422
+        assert response.json()["detail"]["errors"][0]["code"] == "governance_permission_denied"
+
+    monkeypatch.setenv("QUANT_AGENT_ACTOR_ROLE", "approver")
+    approver_runtime = runtime_with_preflight_client(FakePreflightAppClient(), ledger=ledger)
+    approver_client = TestClient(create_app(approver_runtime))
+    response = approver_client.post(
+        "/external-approval-decisions",
+        json={
+            "run_id": plan_payload["run_id"],
+            "decision_intent": "import_external_approval_decision",
+            "approval_decision": decision,
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["approval_decision"]["decision_status"] == "approved"
+
+
+def test_external_approval_decision_import_rejects_bad_requests_and_payloads(
+    tmp_path: Path,
+) -> None:
+    loader = QuantSuiteContractLoader(QUANT_SUITE_ROOT)
+    ledger = FileBackedLedger(
+        tmp_path,
+        validate_contract=loader.validate_agent_contract_payload,
+    )
+    runtime = runtime_with_preflight_client(FakePreflightAppClient(), ledger=ledger)
+    client = TestClient(create_app(runtime))
+    plan_payload = _create_plan_with_lifecycle_reference(client)
+    preview = client.post(
+        "/external-approval-requests",
+        json={
+            "run_id": plan_payload["run_id"],
+            "approval_intent": "preview_external_approval_request",
+            "approval_scope": "run",
+            "step_id": None,
+        },
+    )
+    assert preview.status_code == 200
+    approval_request = preview.json()["approval_request"]
+    decision = _external_approval_decision(approval_request)
+
+    no_preview_decision = copy.deepcopy(decision)
+    no_preview_decision["approval_request_id"] = "missing_request"
+    missing_preview = client.post(
+        "/external-approval-decisions",
+        json={
+            "run_id": plan_payload["run_id"],
+            "decision_intent": "import_external_approval_decision",
+            "approval_decision": no_preview_decision,
+        },
+    )
+    assert missing_preview.status_code == 422
+    assert missing_preview.json()["detail"]["errors"][0]["code"] == "missing_external_approval_request_preview"
+
+    run_mismatch = copy.deepcopy(decision)
+    run_mismatch["run_id"] = "other_run"
+    mismatch_response = client.post(
+        "/external-approval-decisions",
+        json={
+            "run_id": plan_payload["run_id"],
+            "decision_intent": "import_external_approval_decision",
+            "approval_decision": run_mismatch,
+        },
+    )
+    assert mismatch_response.status_code == 422
+    assert mismatch_response.json()["detail"]["errors"][0]["code"] == (
+        "external_approval_decision_run_mismatch"
+    )
+
+    permitted = copy.deepcopy(decision)
+    permitted["execution_permitted"] = True
+    permitted_response = client.post(
+        "/external-approval-decisions",
+        json={
+            "run_id": plan_payload["run_id"],
+            "decision_intent": "import_external_approval_decision",
+            "approval_decision": permitted,
+        },
+    )
+    assert permitted_response.status_code == 422
+    assert permitted_response.json()["detail"]["errors"][0]["code"] == (
+        "external_approval_decision_execution_permitted"
+    )
+
+    unsafe = copy.deepcopy(decision)
+    unsafe["decision_summary"]["raw_path"] = "C:\\raw\\approval.json"
+    unsafe_response = client.post(
+        "/external-approval-decisions",
+        json={
+            "run_id": plan_payload["run_id"],
+            "decision_intent": "import_external_approval_decision",
+            "approval_decision": unsafe,
+        },
+    )
+    assert unsafe_response.status_code == 422
+    assert unsafe_response.json()["detail"]["errors"][0]["code"] == (
+        "unsafe_external_approval_decision_payload"
+    )
+
+    extra = client.post(
+        "/external-approval-decisions",
+        json={
+            "run_id": plan_payload["run_id"],
+            "decision_intent": "import_external_approval_decision",
+            "approval_decision": decision,
+            "execution_permitted": True,
+        },
+    )
+    assert extra.status_code == 422
+
+    cancellation = client.post(
+        "/cancellations",
+        json={
+            "run_id": plan_payload["run_id"],
+            "cancellation_intent": "cancel_run",
+            "reason": "user_cancelled",
+        },
+    )
+    assert cancellation.status_code == 200
+    terminal_response = client.post(
+        "/external-approval-decisions",
+        json={
+            "run_id": plan_payload["run_id"],
+            "decision_intent": "import_external_approval_decision",
+            "approval_decision": decision,
+        },
+    )
+    assert terminal_response.status_code == 422
+    assert terminal_response.json()["detail"]["errors"][0]["code"] == (
+        "terminal_run_external_approval_decision"
+    )
+
+
+def test_external_approval_submission_local_outbox_idempotent_and_contract_valid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    outbox_dir = tmp_path / "approval_outbox"
+    monkeypatch.setenv("QUANT_AGENT_EXTERNAL_APPROVAL_ADAPTER", "local_outbox")
+    monkeypatch.setenv("QUANT_AGENT_EXTERNAL_APPROVAL_OUTBOX_DIR", str(outbox_dir))
+    loader = QuantSuiteContractLoader(QUANT_SUITE_ROOT)
+    ledger = FileBackedLedger(
+        tmp_path / "ledgers",
+        validate_contract=loader.validate_agent_contract_payload,
+    )
+    runtime = runtime_with_preflight_client(FakePreflightAppClient(), ledger=ledger)
+    client = TestClient(create_app(runtime))
+    plan_payload = _create_plan_with_lifecycle_reference(client)
+    preview = client.post(
+        "/external-approval-requests",
+        json={
+            "run_id": plan_payload["run_id"],
+            "approval_intent": "preview_external_approval_request",
+            "approval_scope": "run",
+            "step_id": None,
+        },
+    )
+    assert preview.status_code == 200
+    approval_request_id = preview.json()["approval_request"]["approval_request_id"]
+
+    first = client.post(
+        "/external-approval-submissions",
+        json={
+            "run_id": plan_payload["run_id"],
+            "submission_intent": "submit_external_approval_request",
+            "approval_request_id": approval_request_id,
+        },
+    )
+    second = client.post(
+        "/external-approval-submissions",
+        json={
+            "run_id": plan_payload["run_id"],
+            "submission_intent": "submit_external_approval_request",
+            "approval_request_id": approval_request_id,
+        },
+    )
+    assert first.status_code == 200
+    assert second.status_code == 200
+    payload = first.json()
+    duplicate_payload = second.json()
+    assert duplicate_payload["external_approval_submission"]["external_approval_submission_id"] == (
+        payload["external_approval_submission"]["external_approval_submission_id"]
+    )
+    assert payload["external_approval_submission"]["submission_status"] == "submitted"
+    assert payload["external_approval_submission"]["execution_permitted"] is False
+    assert payload["external_approval_submission"]["adapter_summary"]["adapter_mode"] == "local_outbox"
+    assert payload["external_approval_submission"]["adapter_summary"]["supports_external_network"] is False
+    assert payload["run_status"]["external_approval_summary"]["status"] == "submitted"
+    assert payload["orchestration"]["external_approval_summary"]["submission_count"] == 1
+    loader.validate_agent_contract_payload(
+        payload["external_approval_submission"],
+        "agent_external_approval_submission.v1.schema.json",
+    )
+
+    outbox_files = sorted(outbox_dir.glob("*.json"))
+    assert len(outbox_files) == 1
+    outbox_payload = json.loads(outbox_files[0].read_text(encoding="utf-8"))
+    loader.validate_agent_contract_payload(
+        outbox_payload,
+        "agent_external_approval_submission.v1.schema.json",
+    )
+    entry = ledger.get(plan_payload["run_id"])
+    assert entry is not None
+    submission_events = [
+        event
+        for event in entry.recovery_events
+        if event.get("event_type") == "external_approval_submission"
+    ]
+    assert len(submission_events) == 1
+    assert submission_events[0]["execution_permitted"] is False
+    loader.validate_agent_contract_payload(
+        entry.model_dump(mode="json"),
+        "agent_execution_ledger.v1.schema.json",
+    )
+    serialized = json.dumps(
+        {
+            "manifest": client.get("/runtime/manifest").json(),
+            "response": payload,
+            "ledger": entry.model_dump(mode="json"),
+            "outbox": outbox_payload,
+        },
+        sort_keys=True,
+    )
+    assert str(outbox_dir) not in serialized
+    for unsafe_term in [
+        "C:\\",
+        "/Users/",
+        "http://",
+        "https://",
+        "OPENAI_API_KEY",
+        "sk-test",
+        "paste-your-openai-api-key",
+        "\"provider_response\"",
+        "\"app_payload\"",
+        "\"links\"",
+        "\"query\"",
+    ]:
+        assert unsafe_term not in serialized
+
+
+def test_external_approval_submission_status_links_outbox_and_decision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    outbox_dir = tmp_path / "approval_outbox"
+    monkeypatch.setenv("QUANT_AGENT_EXTERNAL_APPROVAL_ADAPTER", "local_outbox")
+    monkeypatch.setenv("QUANT_AGENT_EXTERNAL_APPROVAL_OUTBOX_DIR", str(outbox_dir))
+    loader = QuantSuiteContractLoader(QUANT_SUITE_ROOT)
+    ledger = FileBackedLedger(
+        tmp_path / "ledgers",
+        validate_contract=loader.validate_agent_contract_payload,
+    )
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient(), ledger=ledger)))
+    plan_payload = _create_plan_with_lifecycle_reference(client)
+
+    empty_status = client.get(f"/runs/{plan_payload['run_id']}/external-approval-submissions")
+    assert empty_status.status_code == 200
+    empty_payload = empty_status.json()
+    assert empty_payload["submissions"] == []
+    assert empty_payload["external_approval_summary"]["outbox_status"] == "not_checked"
+    assert empty_payload["ledger_recorded"] is False
+
+    preview = client.post(
+        "/external-approval-requests",
+        json={
+            "run_id": plan_payload["run_id"],
+            "approval_intent": "preview_external_approval_request",
+            "approval_scope": "run",
+            "step_id": None,
+        },
+    )
+    assert preview.status_code == 200
+    approval_request = preview.json()["approval_request"]
+    submission = client.post(
+        "/external-approval-submissions",
+        json={
+            "run_id": plan_payload["run_id"],
+            "submission_intent": "submit_external_approval_request",
+            "approval_request_id": approval_request["approval_request_id"],
+        },
+    )
+    assert submission.status_code == 200
+
+    submitted_status = client.get(f"/runs/{plan_payload['run_id']}/external-approval-submissions")
+    assert submitted_status.status_code == 200
+    submitted_payload = submitted_status.json()
+    assert len(submitted_payload["submissions"]) == 1
+    submitted_summary = submitted_payload["submissions"][0]
+    assert submitted_summary["approval_request_id"] == approval_request["approval_request_id"]
+    assert submitted_summary["submission_status"] == "submitted"
+    assert submitted_summary["outbox_status"] == "present"
+    assert submitted_summary["adapter_mode"] == "local_outbox"
+    assert submitted_summary["latest_matching_decision"] is None
+    assert submitted_summary["ledger_integrity_summary"]["status"] == "verified"
+    assert submitted_payload["external_approval_summary"]["latest_submission"]["outbox_status"] == "present"
+    assert submitted_payload["external_approval_summary"]["outbox_status"] == "present"
+
+    decision = _external_approval_decision(approval_request)
+    imported = client.post(
+        "/external-approval-decisions",
+        json={
+            "run_id": plan_payload["run_id"],
+            "decision_intent": "import_external_approval_decision",
+            "approval_decision": decision,
+        },
+    )
+    assert imported.status_code == 200
+    imported_payload = imported.json()
+    latest_decision = imported_payload["external_approval_summary"]["latest_matching_decision"]
+    assert latest_decision["decision_status"] == "approved"
+    assert latest_decision["submission_status"] == "submitted"
+    assert latest_decision["matched_submission_reference"]["outbox_status"] == "present"
+
+    linked_status = client.get(f"/runs/{plan_payload['run_id']}/external-approval-submissions")
+    assert linked_status.status_code == 200
+    linked_summary = linked_status.json()["submissions"][0]
+    assert linked_summary["latest_matching_decision"]["decision_status"] == "approved"
+    assert linked_summary["latest_matching_decision"]["matched_submission_reference"][
+        "external_approval_submission_id"
+    ] == linked_summary["external_approval_submission_id"]
+
+    support_bundle = client.get(f"/runs/{plan_payload['run_id']}/support-bundle")
+    assert support_bundle.status_code == 200
+    bundle_summary = support_bundle.json()["run_status"]["external_approval_summary"]
+    assert bundle_summary["latest_submission"]["outbox_status"] == "present"
+    assert bundle_summary["latest_matching_decision"]["decision_status"] == "approved"
+
+    outbox_files = sorted(outbox_dir.glob("*.json"))
+    assert len(outbox_files) == 1
+    outbox_files[0].unlink()
+    missing_status = client.get(f"/runs/{plan_payload['run_id']}/external-approval-submissions")
+    assert missing_status.status_code == 200
+    assert missing_status.json()["submissions"][0]["outbox_status"] == "missing"
+    assert missing_status.json()["external_approval_summary"]["outbox_status"] == "missing"
+
+    monkeypatch.setenv("QUANT_AGENT_EXTERNAL_APPROVAL_ADAPTER", "disabled")
+    disabled_status = client.get(f"/runs/{plan_payload['run_id']}/external-approval-submissions")
+    assert disabled_status.status_code == 200
+    assert disabled_status.json()["submissions"][0]["outbox_status"] == "disabled"
+
+    serialized = json.dumps(
+        {
+            "linked_status": linked_status.json(),
+            "support_bundle": support_bundle.json(),
+            "missing_status": missing_status.json(),
+            "disabled_status": disabled_status.json(),
+        },
+        sort_keys=True,
+    )
+    assert str(outbox_dir) not in serialized
+    for unsafe_term in [
+        "C:\\",
+        "/Users/",
+        "http://",
+        "https://",
+        "OPENAI_API_KEY",
+        "sk-test",
+        "\"provider_response\"",
+        "\"app_payload\"",
+        "\"raw_path\"",
+    ]:
+        assert unsafe_term not in serialized
+
+
+def test_external_approval_submission_status_governance_read_access_and_denial(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("QUANT_AGENT_EXTERNAL_APPROVAL_OUTBOX_DIR", str(tmp_path / "outbox"))
+    loader = QuantSuiteContractLoader(QUANT_SUITE_ROOT)
+    ledger = FileBackedLedger(
+        tmp_path / "ledgers",
+        validate_contract=loader.validate_agent_contract_payload,
+    )
+    operator_client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient(), ledger=ledger)))
+    plan_payload = _create_plan_with_lifecycle_reference(operator_client)
+    preview = operator_client.post(
+        "/external-approval-requests",
+        json={
+            "run_id": plan_payload["run_id"],
+            "approval_intent": "preview_external_approval_request",
+            "approval_scope": "run",
+            "step_id": None,
+        },
+    )
+    assert preview.status_code == 200
+    submitted = operator_client.post(
+        "/external-approval-submissions",
+        json={
+            "run_id": plan_payload["run_id"],
+            "submission_intent": "submit_external_approval_request",
+            "approval_request_id": preview.json()["approval_request"]["approval_request_id"],
+        },
+    )
+    assert submitted.status_code == 200
+
+    monkeypatch.setenv("QUANT_AGENT_ACTOR_ROLE", "viewer")
+    viewer_client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient(), ledger=ledger)))
+    viewer_response = viewer_client.get(f"/runs/{plan_payload['run_id']}/external-approval-submissions")
+    assert viewer_response.status_code == 200
+    assert viewer_response.json()["submissions"][0]["outbox_status"] == "present"
+
+    policy_path = tmp_path / "deny_submission_status_policy.json"
+    _write_governance_policy_pack(
+        policy_path,
+        role_id="status_reader",
+        denied_routes=["GET /runs/{run_id}/external-approval-submissions"],
+    )
+    monkeypatch.setenv("QUANT_AGENT_GOVERNANCE_POLICY_PACK_PATH", str(policy_path))
+    monkeypatch.setenv("QUANT_AGENT_ACTOR_ROLE", "status_reader")
+    denied_client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient(), ledger=ledger)))
+    denied_response = denied_client.get(f"/runs/{plan_payload['run_id']}/external-approval-submissions")
+    assert denied_response.status_code == 422
+    assert denied_response.json()["detail"]["errors"][0]["code"] == "governance_permission_denied"
+
+
+def test_external_approval_submission_disabled_adapter_rejects_without_path_leak(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    outbox_dir = tmp_path / "disabled_outbox"
+    monkeypatch.setenv("QUANT_AGENT_EXTERNAL_APPROVAL_ADAPTER", "disabled")
+    monkeypatch.setenv("QUANT_AGENT_EXTERNAL_APPROVAL_OUTBOX_DIR", str(outbox_dir))
+    loader = QuantSuiteContractLoader(QUANT_SUITE_ROOT)
+    ledger = FileBackedLedger(
+        tmp_path / "ledgers",
+        validate_contract=loader.validate_agent_contract_payload,
+    )
+    runtime = runtime_with_preflight_client(FakePreflightAppClient(), ledger=ledger)
+    client = TestClient(create_app(runtime))
+    plan_payload = _create_plan_with_lifecycle_reference(client)
+    preview = client.post(
+        "/external-approval-requests",
+        json={
+            "run_id": plan_payload["run_id"],
+            "approval_intent": "preview_external_approval_request",
+            "approval_scope": "run",
+            "step_id": None,
+        },
+    )
+    assert preview.status_code == 200
+    response = client.post(
+        "/external-approval-submissions",
+        json={
+            "run_id": plan_payload["run_id"],
+            "submission_intent": "submit_external_approval_request",
+            "approval_request_id": preview.json()["approval_request"]["approval_request_id"],
+        },
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["errors"][0]["code"] == (
+        "external_approval_submission_adapter_disabled"
+    )
+    manifest = client.get("/runtime/manifest").json()
+    assert manifest["external_approval_submission_adapter"]["adapter_mode"] == "disabled"
+    assert manifest["external_approval_submission_adapter"]["enabled"] is False
+    assert str(outbox_dir) not in json.dumps(manifest, sort_keys=True)
+    assert not outbox_dir.exists()
+
+
+def test_external_approval_submission_adapter_failure_is_safe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    outbox_file = tmp_path / "outbox_file"
+    outbox_file.write_text("not a directory", encoding="utf-8")
+    monkeypatch.setenv("QUANT_AGENT_EXTERNAL_APPROVAL_ADAPTER", "local_outbox")
+    monkeypatch.setenv("QUANT_AGENT_EXTERNAL_APPROVAL_OUTBOX_DIR", str(outbox_file))
+    loader = QuantSuiteContractLoader(QUANT_SUITE_ROOT)
+    ledger = FileBackedLedger(
+        tmp_path / "ledgers",
+        validate_contract=loader.validate_agent_contract_payload,
+    )
+    runtime = runtime_with_preflight_client(FakePreflightAppClient(), ledger=ledger)
+    client = TestClient(create_app(runtime))
+    plan_payload = _create_plan_with_lifecycle_reference(client)
+    preview = client.post(
+        "/external-approval-requests",
+        json={
+            "run_id": plan_payload["run_id"],
+            "approval_intent": "preview_external_approval_request",
+            "approval_scope": "run",
+            "step_id": None,
+        },
+    )
+    assert preview.status_code == 200
+
+    response = client.post(
+        "/external-approval-submissions",
+        json={
+            "run_id": plan_payload["run_id"],
+            "submission_intent": "submit_external_approval_request",
+            "approval_request_id": preview.json()["approval_request"]["approval_request_id"],
+        },
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["errors"][0]["code"] == "external_approval_submission_adapter_failed"
+    assert str(outbox_file) not in json.dumps(response.json(), sort_keys=True)
+    entry = ledger.get(plan_payload["run_id"])
+    assert entry is not None
+    assert [
+        event
+        for event in entry.recovery_events
+        if event.get("event_type") == "external_approval_submission"
+    ] == []
+
+
+def test_external_approval_submission_governance_denies_viewer_and_executor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("QUANT_AGENT_EXTERNAL_APPROVAL_OUTBOX_DIR", str(tmp_path / "outbox"))
+    loader = QuantSuiteContractLoader(QUANT_SUITE_ROOT)
+    ledger = FileBackedLedger(
+        tmp_path / "ledgers",
+        validate_contract=loader.validate_agent_contract_payload,
+    )
+    operator_client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient(), ledger=ledger)))
+    plan_payload = _create_plan_with_lifecycle_reference(operator_client)
+    preview = operator_client.post(
+        "/external-approval-requests",
+        json={
+            "run_id": plan_payload["run_id"],
+            "approval_intent": "preview_external_approval_request",
+            "approval_scope": "run",
+            "step_id": None,
+        },
+    )
+    assert preview.status_code == 200
+    approval_request_id = preview.json()["approval_request"]["approval_request_id"]
+
+    for role in ["viewer", "executor"]:
+        monkeypatch.setenv("QUANT_AGENT_ACTOR_ROLE", role)
+        restricted_client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient(), ledger=ledger)))
+        response = restricted_client.post(
+            "/external-approval-submissions",
+            json={
+                "run_id": plan_payload["run_id"],
+                "submission_intent": "submit_external_approval_request",
+                "approval_request_id": approval_request_id,
+            },
+        )
+        assert response.status_code == 422
+        assert response.json()["detail"]["errors"][0]["code"] == "governance_permission_denied"
+
+    monkeypatch.setenv("QUANT_AGENT_ACTOR_ROLE", "approver")
+    approver_client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient(), ledger=ledger)))
+    response = approver_client.post(
+        "/external-approval-submissions",
+        json={
+            "run_id": plan_payload["run_id"],
+            "submission_intent": "submit_external_approval_request",
+            "approval_request_id": approval_request_id,
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["external_approval_submission"]["submission_status"] == "submitted"
+
+
+def test_external_approval_submission_rejects_missing_request_decision_and_extra_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("QUANT_AGENT_EXTERNAL_APPROVAL_OUTBOX_DIR", str(tmp_path / "outbox"))
+    loader = QuantSuiteContractLoader(QUANT_SUITE_ROOT)
+    ledger = FileBackedLedger(
+        tmp_path / "ledgers",
+        validate_contract=loader.validate_agent_contract_payload,
+    )
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient(), ledger=ledger)))
+    plan_payload = _create_plan_with_lifecycle_reference(client)
+
+    missing_preview = client.post(
+        "/external-approval-submissions",
+        json={
+            "run_id": plan_payload["run_id"],
+            "submission_intent": "submit_external_approval_request",
+            "approval_request_id": "missing_request",
+        },
+    )
+    assert missing_preview.status_code == 422
+    assert missing_preview.json()["detail"]["errors"][0]["code"] == (
+        "missing_external_approval_request_preview"
+    )
+
+    preview = client.post(
+        "/external-approval-requests",
+        json={
+            "run_id": plan_payload["run_id"],
+            "approval_intent": "preview_external_approval_request",
+            "approval_scope": "run",
+            "step_id": None,
+        },
+    )
+    assert preview.status_code == 200
+    approval_request = preview.json()["approval_request"]
+    extra = client.post(
+        "/external-approval-submissions",
+        json={
+            "run_id": plan_payload["run_id"],
+            "submission_intent": "submit_external_approval_request",
+            "approval_request_id": approval_request["approval_request_id"],
+            "external_approval_submission": approval_request,
+        },
+    )
+    assert extra.status_code == 422
+
+    decision = _external_approval_decision(approval_request)
+    imported_decision = client.post(
+        "/external-approval-decisions",
+        json={
+            "run_id": plan_payload["run_id"],
+            "decision_intent": "import_external_approval_decision",
+            "approval_decision": decision,
+        },
+    )
+    assert imported_decision.status_code == 200
+    assert imported_decision.json()["external_approval_summary"]["latest_matching_decision"][
+        "submission_status"
+    ] == "not_submitted"
+    entry_after_decision = ledger.get(plan_payload["run_id"])
+    assert entry_after_decision is not None
+    decision_event = next(
+        event
+        for event in entry_after_decision.recovery_events
+        if event.get("event_type") == "external_approval_decision_import"
+    )
+    assert decision_event["submission_status"] == "not_submitted"
+    assert decision_event["matched_submission_reference"] is None
+    after_decision = client.post(
+        "/external-approval-submissions",
+        json={
+            "run_id": plan_payload["run_id"],
+            "submission_intent": "submit_external_approval_request",
+            "approval_request_id": approval_request["approval_request_id"],
+        },
+    )
+    assert after_decision.status_code == 422
+    assert after_decision.json()["detail"]["errors"][0]["code"] == (
+        "external_approval_decision_already_imported"
+    )
+
+    cancelled_plan = _create_plan_with_lifecycle_reference(client)
+    cancelled_preview = client.post(
+        "/external-approval-requests",
+        json={
+            "run_id": cancelled_plan["run_id"],
+            "approval_intent": "preview_external_approval_request",
+            "approval_scope": "run",
+            "step_id": None,
+        },
+    )
+    assert cancelled_preview.status_code == 200
+    cancellation = client.post(
+        "/cancellations",
+        json={
+            "run_id": cancelled_plan["run_id"],
+            "cancellation_intent": "cancel_run",
+            "reason": "user_cancelled",
+        },
+    )
+    assert cancellation.status_code == 200
+    terminal = client.post(
+        "/external-approval-submissions",
+        json={
+            "run_id": cancelled_plan["run_id"],
+            "submission_intent": "submit_external_approval_request",
+            "approval_request_id": cancelled_preview.json()["approval_request"]["approval_request_id"],
+        },
+    )
+    assert terminal.status_code == 422
+    assert terminal.json()["detail"]["errors"][0]["code"] == (
+        "terminal_run_external_approval_submission"
+    )
+
+
+def test_external_approval_enforcement_blocks_until_approved_decision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    policy_path = tmp_path / "governance_policy_pack.json"
+    _write_governance_policy_pack(
+        policy_path,
+        role_id="workflow_operator",
+        external_approval_rules=[_blocking_external_approval_rule()],
+    )
+    monkeypatch.setenv("QUANT_AGENT_GOVERNANCE_POLICY_PACK_PATH", str(policy_path))
+    monkeypatch.setenv("QUANT_AGENT_ACTOR_ROLE", "workflow_operator")
+    monkeypatch.setenv("QUANT_AGENT_ACTOR_ID", "workflow_actor")
+    ledger = InMemoryLedger()
+    app_client = FakePreflightAppClient()
+    client = TestClient(create_app(runtime_with_preflight_client(app_client, ledger=ledger)))
+    plan_payload, studio_step = _prepare_user_owned_studio_execution(client)
+
+    denied = client.post(
+        "/executions",
+        json={"run_id": plan_payload["run_id"], "step_id": studio_step["step_id"]},
+    )
+    assert denied.status_code == 422
+    issue = denied.json()["detail"]["errors"][0]
+    assert issue["code"] == "external_approval_required"
+    assert issue["capability_id"] == "quant_studio.prepare_model_config_draft"
+    assert app_client.execution_calls == []
+    ledger_payload = client.get(f"/runs/{plan_payload['run_id']}/ledger").json()
+    denial = ledger_payload["recovery_events"][-1]
+    assert denial["event_type"] == "external_approval_enforcement_denied"
+    assert denial["reason"] == "missing_external_approval_request"
+    assert denial["execution_permitted"] is False
+
+    preview = client.post(
+        "/external-approval-requests",
+        json={
+            "run_id": plan_payload["run_id"],
+            "approval_intent": "preview_external_approval_request",
+            "approval_scope": "run",
+            "step_id": None,
+        },
+    )
+    assert preview.status_code == 200
+    still_denied = client.post(
+        "/executions",
+        json={"run_id": plan_payload["run_id"], "step_id": studio_step["step_id"]},
+    )
+    assert still_denied.status_code == 422
+    assert still_denied.json()["detail"]["errors"][0]["code"] == "external_approval_required"
+
+    decision = _external_approval_decision(preview.json()["approval_request"])
+    import_response = client.post(
+        "/external-approval-decisions",
+        json={
+            "run_id": plan_payload["run_id"],
+            "decision_intent": "import_external_approval_decision",
+            "approval_decision": decision,
+        },
+    )
+    assert import_response.status_code == 200
+
+    execution = client.post(
+        "/executions",
+        json={"run_id": plan_payload["run_id"], "step_id": studio_step["step_id"]},
+    )
+    assert execution.status_code == 200
+    assert execution.json()["action_result"]["execution_status"] == "succeeded"
+    status_payload = client.get(f"/runs/{plan_payload['run_id']}").json()
+    enforcement_summary = status_payload["external_approval_enforcement_summary"]
+    assert enforcement_summary["blocked"] is False
+    assert enforcement_summary["latest_decision"]["approval_decision_status"] == "approved"
+
+
+def test_external_approval_enforcement_accepts_step_level_approved_decision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    policy_path = tmp_path / "governance_policy_pack.json"
+    _write_governance_policy_pack(
+        policy_path,
+        role_id="workflow_operator",
+        external_approval_rules=[_blocking_external_approval_rule()],
+    )
+    monkeypatch.setenv("QUANT_AGENT_GOVERNANCE_POLICY_PACK_PATH", str(policy_path))
+    monkeypatch.setenv("QUANT_AGENT_ACTOR_ROLE", "workflow_operator")
+    ledger = InMemoryLedger()
+    app_client = FakePreflightAppClient()
+    client = TestClient(create_app(runtime_with_preflight_client(app_client, ledger=ledger)))
+    plan_payload, studio_step = _prepare_user_owned_studio_execution(client)
+
+    preview = client.post(
+        "/external-approval-requests",
+        json={
+            "run_id": plan_payload["run_id"],
+            "approval_intent": "preview_external_approval_request",
+            "approval_scope": "step",
+            "step_id": studio_step["step_id"],
+        },
+    )
+    assert preview.status_code == 200
+    decision = _external_approval_decision(preview.json()["approval_request"])
+    import_response = client.post(
+        "/external-approval-decisions",
+        json={
+            "run_id": plan_payload["run_id"],
+            "decision_intent": "import_external_approval_decision",
+            "approval_decision": decision,
+        },
+    )
+    assert import_response.status_code == 200
+
+    execution = client.post(
+        "/executions",
+        json={"run_id": plan_payload["run_id"], "step_id": studio_step["step_id"]},
+    )
+    assert execution.status_code == 200
+    assert execution.json()["action_result"]["execution_status"] == "succeeded"
+
+
+@pytest.mark.parametrize("decision_status", ["rejected", "needs_changes", "expired"])
+def test_external_approval_enforcement_blocks_non_approved_decisions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    decision_status: str,
+) -> None:
+    policy_path = tmp_path / "governance_policy_pack.json"
+    _write_governance_policy_pack(
+        policy_path,
+        role_id="workflow_operator",
+        external_approval_rules=[_blocking_external_approval_rule()],
+    )
+    monkeypatch.setenv("QUANT_AGENT_GOVERNANCE_POLICY_PACK_PATH", str(policy_path))
+    monkeypatch.setenv("QUANT_AGENT_ACTOR_ROLE", "workflow_operator")
+    ledger = InMemoryLedger()
+    app_client = FakePreflightAppClient()
+    client = TestClient(create_app(runtime_with_preflight_client(app_client, ledger=ledger)))
+    plan_payload, studio_step = _prepare_user_owned_studio_execution(client)
+    preview = client.post(
+        "/external-approval-requests",
+        json={
+            "run_id": plan_payload["run_id"],
+            "approval_intent": "preview_external_approval_request",
+            "approval_scope": "run",
+            "step_id": None,
+        },
+    )
+    assert preview.status_code == 200
+    decision = _external_approval_decision(
+        preview.json()["approval_request"],
+        decision_status=decision_status,
+    )
+    import_response = client.post(
+        "/external-approval-decisions",
+        json={
+            "run_id": plan_payload["run_id"],
+            "decision_intent": "import_external_approval_decision",
+            "approval_decision": decision,
+        },
+    )
+    assert import_response.status_code == 200
+
+    denied = client.post(
+        "/executions",
+        json={"run_id": plan_payload["run_id"], "step_id": studio_step["step_id"]},
+    )
+    assert denied.status_code == 422
+    issue = denied.json()["detail"]["errors"][0]
+    assert issue["code"] == "external_approval_decision_denied"
+    assert issue["capability_id"] == "quant_studio.prepare_model_config_draft"
+    assert app_client.execution_calls == []
+    status_payload = client.get(f"/runs/{plan_payload['run_id']}").json()
+    enforcement_summary = status_payload["external_approval_enforcement_summary"]
+    assert enforcement_summary["blocked"] is True
+    assert enforcement_summary["latest_decision"]["approval_decision_status"] == decision_status
+
+
+def test_external_approval_enforcement_protects_retry_route(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    policy_path = tmp_path / "governance_policy_pack.json"
+    _write_governance_policy_pack(
+        policy_path,
+        role_id="workflow_operator",
+        external_approval_rules=[_blocking_external_approval_rule()],
+    )
+    monkeypatch.setenv("QUANT_AGENT_GOVERNANCE_POLICY_PACK_PATH", str(policy_path))
+    monkeypatch.setenv("QUANT_AGENT_ACTOR_ROLE", "workflow_operator")
+    ledger = InMemoryLedger()
+    app_client = FakePreflightAppClient()
+    client = TestClient(create_app(runtime_with_preflight_client(app_client, ledger=ledger)))
+    plan_payload, studio_step = _prepare_user_owned_studio_execution(client)
+
+    denied = client.post(
+        "/retries",
+        json={
+            "run_id": plan_payload["run_id"],
+            "step_id": studio_step["step_id"],
+            "retry_intent": "retry_failed_step",
+        },
+    )
+
+    assert denied.status_code == 422
+    issue = denied.json()["detail"]["errors"][0]
+    assert issue["code"] == "external_approval_required"
+    assert issue["capability_id"] == "quant_studio.prepare_model_config_draft"
+    ledger_payload = client.get(f"/runs/{plan_payload['run_id']}/ledger").json()
+    denial = ledger_payload["recovery_events"][-1]
+    assert denial["event_type"] == "external_approval_enforcement_denied"
+    assert denial["denied_route"] == "POST /retries"
+
+
+def test_phase9_certification_local_development_workflow_and_exports_remain_safe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("QUANT_AGENT_GOVERNANCE_POLICY_PACK_PATH", raising=False)
+    monkeypatch.setenv("QUANT_AGENT_GOVERNANCE_ENVIRONMENT", "local_development")
+    monkeypatch.setenv("QUANT_AGENT_ACTOR_ROLE", "local_developer_operator")
+    monkeypatch.setenv("QUANT_AGENT_ACTOR_ID", "local_user")
+    fixture = _expected_phase9_governance_certification_fixture()
+    loader = QuantSuiteContractLoader(QUANT_SUITE_ROOT)
+    ledger = FileBackedLedger(
+        tmp_path / "ledgers",
+        validate_contract=loader.validate_agent_contract_payload,
+    )
+    app_client = FakePreflightAppClient()
+    client = TestClient(create_app(runtime_with_preflight_client(app_client, ledger=ledger)))
+
+    manifest = client.get("/runtime/manifest").json()
+    for key, expected_value in fixture["required_support_levels"].items():
+        assert manifest[key] == expected_value
+    assert manifest["governance_summary"]["environment"] == "local_development"
+    enforcement_summary = manifest["external_approval_enforcement_summary"]
+    assert enforcement_summary["actor_exempt"] is True
+    assert enforcement_summary["audit_only_rule_ids"] == ["draft_action_external_approval_gate"]
+
+    plan_payload, studio_step = _prepare_user_owned_studio_execution(client)
+    execution = client.post(
+        "/executions",
+        json={"run_id": plan_payload["run_id"], "step_id": studio_step["step_id"]},
+    )
+    assert execution.status_code == 200
+    assert execution.json()["action_result"]["execution_status"] == "succeeded"
+
+    ledger_payload = client.get(f"/runs/{plan_payload['run_id']}/ledger").json()
+    support_bundle_payload = client.get(f"/runs/{plan_payload['run_id']}/support-bundle").json()
+    serialized_evidence = json.dumps(
+        {"ledger": ledger_payload, "support_bundle": support_bundle_payload},
+        sort_keys=True,
+    )
+    for unsafe_term in [
+        "C:\\",
+        "/Users/",
+        "http://",
+        "https://",
+        "OPENAI_API_KEY",
+        "sk-test",
+        "paste-your-openai-api-key",
+        "do-not-ledger",
+        "\"links\"",
+        "\"query\"",
+    ]:
+        assert unsafe_term not in serialized_evidence
+    loader.validate_agent_contract_payload(ledger_payload, "agent_execution_ledger.v1.schema.json")
+    loader.validate_agent_contract_payload(support_bundle_payload, "agent_support_bundle.v1.schema.json")
+
+
+def test_phase9_certification_team_staging_requires_approval_before_executor_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger = InMemoryLedger()
+    app_client = FakePreflightAppClient()
+    approver_client = _client_for_governance_environment(
+        monkeypatch,
+        ledger=ledger,
+        app_client=app_client,
+        environment="team_staging",
+        actor_role="approver",
+        actor_id="approval_actor",
+    )
+
+    plan_payload = _create_user_owned_plan(approver_client)
+    _check_user_owned_readiness(approver_client, plan_payload)
+    _approve_user_plan(approver_client, plan_payload)
+    _approve_user_owned_consent(approver_client, plan_payload)
+
+    executor_client = _client_for_governance_environment(
+        monkeypatch,
+        ledger=ledger,
+        app_client=app_client,
+        environment="team_staging",
+        actor_role="executor",
+        actor_id="execution_actor",
+    )
+    _run_source_preflight(executor_client, plan_payload)
+
+    studio_step = _step_for_capability(plan_payload, "quant_studio.prepare_model_config_draft")
+    approver_client = _client_for_governance_environment(
+        monkeypatch,
+        ledger=ledger,
+        app_client=app_client,
+        environment="team_staging",
+        actor_role="approver",
+        actor_id="approval_actor",
+    )
+    confirmation = approver_client.post(
+        "/confirmations",
+        json={
+            "run_id": plan_payload["run_id"],
+            "step_id": studio_step["step_id"],
+            "confirmation_intent": "approve_plan_step",
+        },
+    )
+    assert confirmation.status_code == 200
+    action_request = executor_client.post(
+        "/action-requests",
+        json={"run_id": plan_payload["run_id"], "step_id": studio_step["step_id"]},
+    )
+    assert action_request.status_code == 200
+
+    denied_before_approval = executor_client.post(
+        "/executions",
+        json={"run_id": plan_payload["run_id"], "step_id": studio_step["step_id"]},
+    )
+    assert denied_before_approval.status_code == 422
+    assert denied_before_approval.json()["detail"]["errors"][0]["code"] == "external_approval_required"
+    assert app_client.execution_calls == []
+
+    approver_client = _client_for_governance_environment(
+        monkeypatch,
+        ledger=ledger,
+        app_client=app_client,
+        environment="team_staging",
+        actor_role="approver",
+        actor_id="approval_actor",
+    )
+    approval_package = approver_client.post(
+        "/external-approval-requests",
+        json={
+            "run_id": plan_payload["run_id"],
+            "approval_intent": "preview_external_approval_request",
+            "approval_scope": "step",
+            "step_id": studio_step["step_id"],
+        },
+    )
+    assert approval_package.status_code == 200
+    decision = _external_approval_decision(approval_package.json()["approval_request"])
+    imported_decision = approver_client.post(
+        "/external-approval-decisions",
+        json={
+            "run_id": plan_payload["run_id"],
+            "decision_intent": "import_external_approval_decision",
+            "approval_decision": decision,
+        },
+    )
+    assert imported_decision.status_code == 200
+
+    executor_client = _client_for_governance_environment(
+        monkeypatch,
+        ledger=ledger,
+        app_client=app_client,
+        environment="team_staging",
+        actor_role="executor",
+        actor_id="execution_actor",
+    )
+    execution = executor_client.post(
+        "/executions",
+        json={"run_id": plan_payload["run_id"], "step_id": studio_step["step_id"]},
+    )
+    assert execution.status_code == 200
+    assert execution.json()["action_result"]["execution_status"] == "succeeded"
+    assert len(app_client.execution_calls) == 1
+
+    status_payload = executor_client.get(f"/runs/{plan_payload['run_id']}").json()
+    assert status_payload["governance_summary"]["policy_pack_id"] == (
+        "quant_agent_team_staging_governance_policy_pack_v1"
+    )
+    assert status_payload["external_approval_enforcement_summary"]["latest_decision"][
+        "approval_decision_status"
+    ] == "approved"
+
+    viewer_client = _client_for_governance_environment(
+        monkeypatch,
+        ledger=ledger,
+        app_client=app_client,
+        environment="team_staging",
+        actor_role="viewer",
+        actor_id="audit_viewer",
+    )
+    support_bundle = viewer_client.get(f"/runs/{plan_payload['run_id']}/support-bundle")
+    assert support_bundle.status_code == 200
+    serialized_support_bundle = json.dumps(support_bundle.json(), sort_keys=True)
+    for unsafe_term in [
+        "C:\\",
+        "/Users/",
+        "http://",
+        "https://",
+        "OPENAI_API_KEY",
+        "sk-test",
+        "paste-your-openai-api-key",
+        "do-not-ledger",
+        "\"links\"",
+        "\"query\"",
+    ]:
+        assert unsafe_term not in serialized_support_bundle
+    assert "external_approval_enforcement_denied" in serialized_support_bundle
+    assert "external_approval_decision_import" in serialized_support_bundle
+    QuantSuiteContractLoader(QUANT_SUITE_ROOT).validate_agent_contract_payload(
+        support_bundle.json(),
+        "agent_support_bundle.v1.schema.json",
+    )
+
+
+def test_phase9_certification_regulated_review_viewer_is_read_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger = InMemoryLedger()
+    app_client = FakePreflightAppClient()
+    local_client = _client_for_governance_environment(
+        monkeypatch,
+        ledger=ledger,
+        app_client=app_client,
+        environment="local_development",
+        actor_role="local_developer_operator",
+        actor_id="local_user",
+    )
+    plan_payload = _create_user_owned_plan(local_client)
+
+    viewer_client = _client_for_governance_environment(
+        monkeypatch,
+        ledger=ledger,
+        app_client=app_client,
+        environment="regulated_review",
+        actor_role="viewer",
+        actor_id="regulated_viewer",
+    )
+    run_status = viewer_client.get(f"/runs/{plan_payload['run_id']}")
+    assert run_status.status_code == 200
+    assert run_status.json()["governance_summary"]["policy_pack_id"] == (
+        "quant_agent_regulated_review_governance_policy_pack_v1"
+    )
+    support_bundle = viewer_client.get(f"/runs/{plan_payload['run_id']}/support-bundle")
+    assert support_bundle.status_code == 200
+
+    denied_pause = viewer_client.post(
+        "/pauses",
+        json={
+            "run_id": plan_payload["run_id"],
+            "pause_intent": "pause_run",
+            "reason": "user_paused",
+        },
+    )
+    assert denied_pause.status_code == 422
+    assert denied_pause.json()["detail"]["errors"][0]["code"] == "governance_permission_denied"
+    ledger_payload = viewer_client.get(f"/runs/{plan_payload['run_id']}/ledger").json()
+    denial = ledger_payload["recovery_events"][-1]
+    assert denial["event_type"] == "governance_permission_denied"
+    assert denial["denied_route"] == "POST /pauses"
+    assert denial["execution_permitted"] is False
+    serialized_ledger = json.dumps(ledger_payload, sort_keys=True)
+    for unsafe_term in [
+        "C:\\",
+        "/Users/",
+        "http://",
+        "https://",
+        "OPENAI_API_KEY",
+        "sk-test",
+        "paste-your-openai-api-key",
+        "do-not-ledger",
+        "\"links\"",
+        "\"query\"",
+    ]:
+        assert unsafe_term not in serialized_ledger
+
+
+def test_phase9_certification_sod_denial_precedes_external_approval_enforcement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    policy_path = tmp_path / "governance_policy_pack.json"
+    _write_governance_policy_pack(
+        policy_path,
+        role_id="workflow_operator",
+        separation_of_duties_rules=[_blocking_sod_rule()],
+        external_approval_rules=[_blocking_external_approval_rule()],
+    )
+    monkeypatch.setenv("QUANT_AGENT_GOVERNANCE_POLICY_PACK_PATH", str(policy_path))
+    monkeypatch.setenv("QUANT_AGENT_ACTOR_ROLE", "workflow_operator")
+    monkeypatch.setenv("QUANT_AGENT_ACTOR_ID", "same_actor")
+    ledger = InMemoryLedger()
+    app_client = FakePreflightAppClient()
+    client = TestClient(create_app(runtime_with_preflight_client(app_client, ledger=ledger)))
+    plan_payload, studio_step = _prepare_user_owned_studio_execution(client)
+
+    denied = client.post(
+        "/executions",
+        json={"run_id": plan_payload["run_id"], "step_id": studio_step["step_id"]},
+    )
+    assert denied.status_code == 422
+    issue = denied.json()["detail"]["errors"][0]
+    assert issue["code"] == "governance_separation_of_duties_denied"
+    assert app_client.execution_calls == []
+    ledger_payload = client.get(f"/runs/{plan_payload['run_id']}/ledger").json()
+    denial = ledger_payload["recovery_events"][-1]
+    assert denial["event_type"] == "governance_separation_of_duties_denied"
+    assert denial["event_type"] != "external_approval_enforcement_denied"
+    assert denial["execution_permitted"] is False
 
 
 def test_plan_revision_preview_for_missing_inputs_validates_and_preserves_active_plan() -> None:
