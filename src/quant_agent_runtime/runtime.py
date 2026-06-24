@@ -11,7 +11,6 @@ from quant_agent_runtime.capabilities import default_capabilities
 from quant_agent_runtime.confirmation import ConfirmationService
 from quant_agent_runtime.contracts import QuantSuiteContractLoader
 from quant_agent_runtime.contracts.internal_test_fixtures import TEMPORARY_AGENT_CONTRACT_FIXTURES
-from quant_agent_runtime.demo_narrative import DemoNarrativeService
 from quant_agent_runtime.execution import ExecutionService
 from quant_agent_runtime.external_approval import (
     EXTERNAL_APPROVAL_ADAPTER_SUPPORT_LEVEL,
@@ -63,8 +62,6 @@ from quant_agent_runtime.redaction import find_unsafe_payload_issues
 from quant_agent_runtime.revalidation import RunRevalidationService
 from quant_agent_runtime.retry import RetryService
 from quant_agent_runtime.run_status import RunStatusService
-from quant_agent_runtime.sample_autopilot import SampleAutopilotPreviewService, SampleAutopilotStepService
-from quant_agent_runtime.sample_reset import SampleResetService
 from quant_agent_runtime.user_workflow import UserWorkflowService
 from quant_agent_runtime.validation.errors import RuntimeValidationError
 from quant_agent_runtime.workflow_runner import (
@@ -95,10 +92,6 @@ class RuntimeContainer:
     plan_revision: PlanRevisionService
     plan_revision_activation: PlanRevisionActivationService
     revalidation: RunRevalidationService
-    sample_autopilot: SampleAutopilotPreviewService
-    sample_autopilot_step: SampleAutopilotStepService
-    sample_reset: SampleResetService
-    demo_narrative: DemoNarrativeService
     user_workflow: UserWorkflowService
     contract_loader: QuantSuiteContractLoader
     capability_discovery: CapabilityDiscoveryService
@@ -371,9 +364,6 @@ class RuntimeContainer:
             plan_revision_support_level="manual_preview_only",
             plan_revision_activation_support_level="manual_child_run_only",
             revalidation_support_level="manual_context_check_only",
-            autopilot_support_level="sample_owned_one_step_manual_advance",
-            sample_reset_support_level="sample_owned_studio_orchestrated_only",
-            demo_narrative_support_level="sample_owned_ledger_narrative_only",
             governance_support_level=governance.support_level,
             separation_of_duties_support_level=governance.separation_of_duties_support_level,
             environment_policy_pack_support_level=ENVIRONMENT_POLICY_PACK_SUPPORT_LEVEL,
@@ -495,18 +485,6 @@ def build_runtime() -> RuntimeContainer:
         contract_loader=contract_loader,
     )
     revalidation = RunRevalidationService(ledger=ledger)
-    sample_autopilot = SampleAutopilotPreviewService(ledger=ledger)
-    sample_autopilot_step = SampleAutopilotStepService(
-        ledger=ledger,
-        preflight=preflight,
-        action_request=action_request,
-        execution=execution,
-    )
-    sample_reset = SampleResetService(
-        ledger=ledger,
-        app_client=app_client,
-    )
-    demo_narrative = DemoNarrativeService(ledger=ledger)
     user_workflow = UserWorkflowService(ledger=ledger)
     external_approval = ExternalApprovalService(
         ledger=ledger,
@@ -543,10 +521,6 @@ def build_runtime() -> RuntimeContainer:
         plan_revision=plan_revision,
         plan_revision_activation=plan_revision_activation,
         revalidation=revalidation,
-        sample_autopilot=sample_autopilot,
-        sample_autopilot_step=sample_autopilot_step,
-        sample_reset=sample_reset,
-        demo_narrative=demo_narrative,
         user_workflow=user_workflow,
         contract_loader=contract_loader,
         capability_discovery=capability_discovery,

@@ -123,6 +123,11 @@ class ProviderRuntimeStatus(StrictModel):
     effective_provider_mode: ProviderMode
     provider_identifier: str
     model_profile: str
+    model: str = ""
+    llm_mode: str = "disabled"
+    role: str = "agent_planning"
+    context_window_tokens: int = 0
+    configuration_source: str = ""
     allowed_model_roles: list[str] = Field(default_factory=list)
     configured: bool
     supports_execution: Literal[False] = False
@@ -133,8 +138,12 @@ class ProviderRuntimeStatus(StrictModel):
     health_check_enabled: bool = False
     provider_reachable: bool = False
     configuration_errors: list[str] = Field(default_factory=list)
+    configuration_warnings: list[str] = Field(default_factory=list)
     timeout_seconds: int = 0
     max_context_chars: int = 18000
+    max_output_tokens: int = 0
+    openai_settings: dict[str, Any] = Field(default_factory=dict)
+    ollama_settings: dict[str, Any] = Field(default_factory=dict)
     retention_policy_label: str = "not_applicable"
 
 
@@ -897,147 +906,6 @@ class UserWorkflowConsentResult(StrictModel):
     orchestration: RunOrchestrationResult
     validation: PlanValidationResult
     ledger_recorded: bool
-
-
-class SampleAutopilotPreviewRequest(StrictModel):
-    run_id: str = Field(min_length=1)
-    autopilot_intent: Literal["preview_sample_autopilot"]
-    current_context_summary: dict[str, Any] = Field(default_factory=dict)
-
-
-class SampleAutopilotEligibility(StrictModel):
-    eligible: bool
-    status: Literal["eligible", "blocked"]
-    sample_workspace_id: str | None = None
-    sample_label: str | None = None
-    lifecycle_id: str | None = None
-    sample_owned: bool = False
-    allowlisted: bool = False
-    reset_boundary_available: bool = False
-    blockers: list[str] = Field(default_factory=list)
-    warnings: list[str] = Field(default_factory=list)
-    safe_labels: dict[str, Any] = Field(default_factory=dict)
-
-
-class SampleAutopilotPreviewStep(StrictModel):
-    step_id: str
-    capability_id: str
-    app_id: str
-    title: str
-    status: str
-    dry_run_action: str
-    allowed_manual_actions: list[str] = Field(default_factory=list)
-    blocker_reason: str | None = None
-    preflight_required: bool = False
-    confirmation_required: bool = False
-    execution_supported: bool = False
-
-
-class SampleAutopilotPreview(StrictModel):
-    dry_run_only: Literal[True] = True
-    autonomous_execution_permitted: Literal[False] = False
-    sample_workspace_id: str | None = None
-    current_step_id: str | None = None
-    step_count: int = 0
-    blocked_step_count: int = 0
-    next_manual_actions: list[str] = Field(default_factory=list)
-    steps: list[SampleAutopilotPreviewStep] = Field(default_factory=list)
-    blockers: list[str] = Field(default_factory=list)
-    warnings: list[str] = Field(default_factory=list)
-
-
-class SampleAutopilotPreviewResult(StrictModel):
-    run_id: str
-    sample_eligibility: SampleAutopilotEligibility
-    autopilot_preview: SampleAutopilotPreview
-    run_progress_summary: RunProgressSummary
-    orchestration: RunOrchestrationResult
-    validation: PlanValidationResult
-    ledger_recorded: bool
-
-
-class SampleAutopilotStepRequest(StrictModel):
-    run_id: str = Field(min_length=1)
-    autopilot_intent: Literal["advance_sample_autopilot_one_step"]
-    current_context_summary: dict[str, Any] = Field(default_factory=dict)
-
-
-class SampleAutopilotStepResult(StrictModel):
-    run_id: str
-    step_id: str | None = None
-    capability_id: str | None = None
-    selected_action: str | None = None
-    advance_status: str
-    autopilot_event: dict[str, Any]
-    delegated_result: dict[str, Any] | None = None
-    sample_eligibility: SampleAutopilotEligibility
-    run_progress_summary: RunProgressSummary
-    orchestration: RunOrchestrationResult
-    validation: PlanValidationResult
-    ledger_recorded: bool
-
-
-class SampleResetPreviewRequest(StrictModel):
-    run_id: str = Field(min_length=1)
-    reset_intent: Literal["preview_sample_reset"]
-    current_context_summary: dict[str, Any] = Field(default_factory=dict)
-
-
-class SampleResetPreviewResult(StrictModel):
-    run_id: str
-    reset_preview_id: str | None = None
-    sample_eligibility: SampleAutopilotEligibility
-    reset_boundary_summary: dict[str, Any]
-    run_progress_summary: RunProgressSummary
-    orchestration: RunOrchestrationResult
-    validation: PlanValidationResult
-    ledger_recorded: bool
-
-
-class SampleResetRequest(StrictModel):
-    run_id: str = Field(min_length=1)
-    reset_intent: Literal["reset_sample_demo"]
-    reset_preview_id: str = Field(min_length=1)
-    current_context_summary: dict[str, Any] = Field(default_factory=dict)
-
-
-class SampleResetResult(StrictModel):
-    run_id: str
-    reset_preview_id: str
-    reset_status: str
-    reset_event: dict[str, Any]
-    reset_result: dict[str, Any] | None = None
-    sample_eligibility: SampleAutopilotEligibility
-    reset_boundary_summary: dict[str, Any]
-    run_progress_summary: RunProgressSummary
-    orchestration: RunOrchestrationResult
-    validation: PlanValidationResult
-    ledger_recorded: bool
-
-
-class DemoNarrativeSection(StrictModel):
-    section_id: str
-    title: str
-    status: str
-    summary: str
-    step_id: str | None = None
-    capability_id: str | None = None
-    app_id: str | None = None
-    evidence_references: list[dict[str, Any]] = Field(default_factory=list)
-    blockers: list[str] = Field(default_factory=list)
-    warnings: list[str] = Field(default_factory=list)
-
-
-class DemoNarrativeResult(StrictModel):
-    run_id: str
-    demo_status: Literal["not_sample_demo", "in_progress", "completed", "sample_reset", "blocked"]
-    sample_eligibility: SampleAutopilotEligibility
-    narrative_sections: list[DemoNarrativeSection] = Field(default_factory=list)
-    safety_summary: dict[str, Any]
-    run_progress_summary: RunProgressSummary
-    orchestration: RunOrchestrationResult
-    ledger_summary: dict[str, Any]
-    validation: PlanValidationResult
 
 
 class AgentSupportBundleResult(StrictModel):

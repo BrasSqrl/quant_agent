@@ -40,9 +40,6 @@ class AgentAppClient(Protocol):
     ) -> dict[str, Any]:
         ...
 
-    def reset_sample_workspaces(self) -> dict[str, Any]:
-        ...
-
 
 @dataclass(frozen=True)
 class LocalAgentAppClient:
@@ -198,36 +195,6 @@ class LocalAgentAppClient:
                 f"{_app_label(app_id)} capability discovery returned a non-object response.",
                 status_code=502,
             )
-        return payload_object
-
-    def reset_sample_workspaces(self) -> dict[str, Any]:
-        url = f"{self.quant_studio_base_url}/api/sample-workspaces/reset"
-        request = Request(
-            url,
-            data=b"{}",
-            method="POST",
-            headers={"Content-Type": "application/json", "Accept": "application/json"},
-        )
-        try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:
-                response_body = response.read().decode("utf-8")
-        except HTTPError as exc:
-            raise AppClientError(
-                f"Quant Studio sample reset returned HTTP {exc.code}.",
-                status_code=502,
-            ) from exc
-        except (OSError, URLError) as exc:
-            raise AppClientError(
-                "Quant Studio sample reset app is unavailable.",
-                status_code=503,
-            ) from exc
-
-        try:
-            payload_object = json.loads(response_body)
-        except json.JSONDecodeError as exc:
-            raise AppClientError("Quant Studio sample reset returned invalid JSON.", status_code=502) from exc
-        if not isinstance(payload_object, dict):
-            raise AppClientError("Quant Studio sample reset returned a non-object response.", status_code=502)
         return payload_object
 
     def _base_url_for(self, app_id: str) -> str | None:

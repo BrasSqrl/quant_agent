@@ -34,7 +34,6 @@ READ_ROUTES = [
     "GET /runs/{run_id}",
     "GET /runs/{run_id}/orchestration",
     "GET /runs/{run_id}/ledger",
-    "GET /runs/{run_id}/demo-narrative",
     "GET /runs/{run_id}/support-bundle",
     "GET /runs/{run_id}/external-approval-submissions",
 ]
@@ -56,10 +55,6 @@ MUTATING_ROUTES = [
     "POST /plan-revisions",
     "POST /plan-revision-activations",
     "POST /run-revalidations",
-    "POST /autopilot-previews",
-    "POST /autopilot-steps",
-    "POST /sample-reset-previews",
-    "POST /sample-resets",
     "POST /user-plan-reviews",
     "POST /user-plan-approvals",
     "POST /user-workflow-readiness",

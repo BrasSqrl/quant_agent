@@ -15,7 +15,6 @@ from quant_agent_runtime.capability_discovery import CapabilityDiscoveryService
 from quant_agent_runtime.confirmation import ConfirmationService
 from quant_agent_runtime.context_builder import LifecycleContextBuilder
 from quant_agent_runtime.contracts import QuantSuiteContractLoader
-from quant_agent_runtime.demo_narrative import DemoNarrativeService
 from quant_agent_runtime.execution import ExecutionService
 from quant_agent_runtime.ledger import InMemoryLedger
 from quant_agent_runtime.model_gateway import FakePlanProvider
@@ -28,8 +27,6 @@ from quant_agent_runtime.revalidation import RunRevalidationService
 from quant_agent_runtime.retry import RetryService
 from quant_agent_runtime.runtime import RuntimeContainer
 from quant_agent_runtime.run_status import RunStatusService
-from quant_agent_runtime.sample_autopilot import SampleAutopilotPreviewService, SampleAutopilotStepService
-from quant_agent_runtime.sample_reset import SampleResetService
 from quant_agent_runtime.user_workflow import UserWorkflowService
 
 
@@ -112,25 +109,6 @@ def runtime_with_canonical_capabilities() -> RuntimeContainer:
             contract_loader=loader,
         ),
         revalidation=RunRevalidationService(ledger=ledger),
-        sample_autopilot=SampleAutopilotPreviewService(
-            ledger=ledger,
-            sample_workspace_root=QUANT_SUITE_ROOT / "fixtures" / "sample_workspaces",
-        ),
-        sample_autopilot_step=SampleAutopilotStepService(
-            ledger=ledger,
-            preflight=preflight,
-            action_request=action_request,
-            execution=execution,
-        ),
-        sample_reset=SampleResetService(
-            ledger=ledger,
-            app_client=app_client,
-            sample_workspace_root=QUANT_SUITE_ROOT / "fixtures" / "sample_workspaces",
-        ),
-        demo_narrative=DemoNarrativeService(
-            ledger=ledger,
-            sample_workspace_root=QUANT_SUITE_ROOT / "fixtures" / "sample_workspaces",
-        ),
         user_workflow=UserWorkflowService(ledger=ledger),
         contract_loader=loader,
         capability_discovery=discovery,
@@ -248,15 +226,6 @@ class FakePreflightAppClient:
         payload: dict[str, Any],
     ) -> dict[str, Any]:
         return {}
-
-    def reset_sample_workspaces(self) -> dict[str, Any]:
-        return {
-            "status": "reset",
-            "deleted_lifecycle_ids": ["sample_credit_pd_scorecard_panel"],
-            "warnings": [],
-            "lifecycle_response": {"manifests": []},
-        }
-
 
 def load_lifecycle_fixture() -> dict[str, object]:
     with LIFECYCLE_FIXTURE_PATH.open("r", encoding="utf-8") as handle:

@@ -134,7 +134,7 @@ class _ProviderUnavailable(Exception):
 def _metadata(status: ProviderRuntimeStatus) -> ProviderMetadata:
     return ProviderMetadata(
         provider=status.provider_identifier,
-        model=status.model_profile,
+        model=status.model or status.model_profile,
         provider_mode=status.effective_provider_mode,
         config_source=status.config_source,
         configured_provider_mode=status.configured_provider_mode,
@@ -210,23 +210,34 @@ def _call_openai(status: ProviderRuntimeStatus, prompt_packet: Mapping[str, str]
         or DEFAULT_OPENAI_BASE_URL
     )
     url = f"{base_url.rstrip('/')}/responses"
-    payload = {
-        "model": status.model_profile,
+    payload: dict[str, Any] = {
+        "model": status.model or status.model_profile,
         "input": [
             {"role": "system", "content": prompt_packet["system"]},
             {"role": "user", "content": prompt_packet["user"]},
         ],
-        "max_output_tokens": 1800,
-        "text": {
-            "format": {
-                "type": "json_schema",
-                "name": "quant_agent_provider_plan",
-                "schema": _PLAN_OUTPUT_JSON_SCHEMA,
-                "strict": False,
-            },
-            "verbosity": "low",
-        },
     }
+    openai_settings = dict(status.openai_settings)
+    payload["max_output_tokens"] = int(
+        openai_settings.pop("max_output_tokens", None)
+        or status.max_output_tokens
+        or 1800
+    )
+    text_settings = dict(openai_settings.pop("text", {}) or {})
+    if openai_settings.pop("json_schema", False):
+        text_settings["format"] = {
+            "type": "json_schema",
+            "name": "quant_agent_provider_plan",
+            "schema": _PLAN_OUTPUT_JSON_SCHEMA,
+            "strict": False,
+        }
+    if "verbosity" not in text_settings:
+        text_settings["verbosity"] = "low"
+    payload["text"] = text_settings
+    if "reasoning" in openai_settings:
+        payload["reasoning"] = openai_settings.pop("reasoning")
+    for key, value in openai_settings.items():
+        payload[key] = value
     request = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
@@ -259,12 +270,16 @@ def _call_ollama(status: ProviderRuntimeStatus, prompt_packet: Mapping[str, str]
     )
     url = f"{base_url.rstrip('/')}/api/generate"
     payload = {
-        "model": status.model_profile,
+        "model": status.model or status.model_profile,
         "prompt": f"{prompt_packet['system']}\n\n{prompt_packet['user']}",
         "stream": False,
-        "format": "json",
-        "options": {"temperature": 0.0},
     }
+    ollama_options = dict(status.ollama_settings)
+    ollama_format = ollama_options.pop("format", "json")
+    if ollama_format:
+        payload["format"] = ollama_format
+    if ollama_options:
+        payload["options"] = ollama_options
     request = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),

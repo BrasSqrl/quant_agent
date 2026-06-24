@@ -404,20 +404,6 @@ def test_provider_backed_credit_pd_sample_plan_validates_and_enables_autopilot_p
         "agent_plan.v1.schema.json",
     )
 
-    autopilot_response = client.post(
-        "/autopilot-previews",
-        json={
-            "run_id": plan_payload["run_id"],
-            "autopilot_intent": "preview_sample_autopilot",
-            "current_context_summary": _credit_pd_sample_context(),
-        },
-    )
-
-    assert autopilot_response.status_code == 200
-    autopilot_payload = autopilot_response.json()
-    assert autopilot_payload["sample_eligibility"]["eligible"] is True
-    assert autopilot_payload["sample_eligibility"]["sample_workspace_id"] == "credit_pd_scorecard_panel"
-    assert autopilot_payload["autopilot_preview"]["dry_run_only"] is True
     ledger_entry = runtime.planner.ledger.get(plan_payload["run_id"])
     assert ledger_entry is not None
     ledger_dump = json.dumps(ledger_entry.model_dump(mode="json"))

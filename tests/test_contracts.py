@@ -12,7 +12,6 @@ from quant_agent_runtime.capabilities import default_capabilities
 from quant_agent_runtime.capability_discovery import CapabilityDiscoveryService
 from quant_agent_runtime.confirmation import ConfirmationService
 from quant_agent_runtime.contracts import QuantSuiteContractLoader
-from quant_agent_runtime.demo_narrative import DemoNarrativeService
 from quant_agent_runtime.execution import ExecutionService
 from quant_agent_runtime.ledger import InMemoryLedger
 from quant_agent_runtime.model_gateway import FakePlanProvider, ModelProvider, ProviderPlanRequest, ProviderResult
@@ -33,8 +32,6 @@ from quant_agent_runtime.revalidation import RunRevalidationService
 from quant_agent_runtime.planner import PlannerService
 from quant_agent_runtime.runtime import RuntimeContainer
 from quant_agent_runtime.run_status import RunStatusService
-from quant_agent_runtime.sample_autopilot import SampleAutopilotPreviewService, SampleAutopilotStepService
-from quant_agent_runtime.sample_reset import SampleResetService
 from quant_agent_runtime.user_workflow import UserWorkflowService
 from quant_agent_runtime.validation.errors import RuntimeValidationError
 
@@ -213,15 +210,6 @@ class FakePreflightAppClient:
     ) -> dict[str, object]:
         return {}
 
-    def reset_sample_workspaces(self) -> dict[str, object]:
-        return {
-            "status": "reset",
-            "deleted_lifecycle_ids": ["sample_credit_pd_scorecard_panel"],
-            "warnings": [],
-            "lifecycle_response": {"manifests": []},
-        }
-
-
 def valid_provider_output() -> dict[str, object]:
     return {
         "user_goal_summary": "safe goal",
@@ -319,25 +307,6 @@ def runtime_with_loader(loader: QuantSuiteContractLoader) -> RuntimeContainer:
             contract_loader=loader,
         ),
         revalidation=RunRevalidationService(ledger=ledger),
-        sample_autopilot=SampleAutopilotPreviewService(
-            ledger=ledger,
-            sample_workspace_root=QUANT_SUITE_ROOT / "fixtures" / "sample_workspaces",
-        ),
-        sample_autopilot_step=SampleAutopilotStepService(
-            ledger=ledger,
-            preflight=preflight,
-            action_request=action_request,
-            execution=execution,
-        ),
-        sample_reset=SampleResetService(
-            ledger=ledger,
-            app_client=app_client,
-            sample_workspace_root=QUANT_SUITE_ROOT / "fixtures" / "sample_workspaces",
-        ),
-        demo_narrative=DemoNarrativeService(
-            ledger=ledger,
-            sample_workspace_root=QUANT_SUITE_ROOT / "fixtures" / "sample_workspaces",
-        ),
         user_workflow=UserWorkflowService(ledger=ledger),
         contract_loader=loader,
         capability_discovery=discovery,
@@ -441,8 +410,8 @@ def test_canonical_provider_config_example_is_loaded_and_mapped() -> None:
     assert status.configured_provider_mode == "disabled_or_local_fallback"
     assert status.effective_provider_mode == ProviderMode.disabled_or_local_fallback
     assert status.provider_identifier == "disabled"
-    assert status.model_profile == "deterministic_plan_fixture"
-    assert status.allowed_model_roles == ["planner"]
+    assert status.model_profile == "disabled_deterministic"
+    assert status.allowed_model_roles == ["agent_planning"]
     assert status.configured is True
     assert status.supports_execution is False
     assert status.hosted_provider_enabled is False
@@ -560,7 +529,7 @@ def test_disabled_provider_fallback_metadata_and_ledger_validate() -> None:
     payload = response.json()
     metadata = payload["provider_metadata"]
     assert metadata["provider"] == "disabled"
-    assert metadata["model"] == "deterministic_plan_fixture"
+    assert metadata["model"] == "disabled_deterministic"
     assert metadata["provider_mode"] == "disabled_or_local_fallback"
     assert metadata["config_source"] == "configured_path"
     assert metadata["configured_provider_mode"] == "disabled_or_local_fallback"

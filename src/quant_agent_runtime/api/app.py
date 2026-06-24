@@ -13,7 +13,6 @@ from quant_agent_runtime.models import (
     CancellationResult,
     ConfirmationRequest,
     ConfirmationResult,
-    DemoNarrativeResult,
     ExecutionRequest,
     ExecutionResult,
     ExternalApprovalDecisionRefreshRequest,
@@ -47,14 +46,6 @@ from quant_agent_runtime.models import (
     RunOrchestrationResult,
     RunStatusResult,
     RuntimeManifest,
-    SampleAutopilotPreviewRequest,
-    SampleAutopilotPreviewResult,
-    SampleAutopilotStepRequest,
-    SampleAutopilotStepResult,
-    SampleResetPreviewRequest,
-    SampleResetPreviewResult,
-    SampleResetRequest,
-    SampleResetResult,
     UserPlanApprovalRequest,
     UserPlanApprovalResult,
     UserPlanReviewRequest,
@@ -343,14 +334,6 @@ def create_app(runtime: RuntimeContainer | None = None) -> FastAPI:
         except RuntimeValidationError as exc:
             raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
 
-    @api.get("/runs/{run_id}/demo-narrative", response_model=DemoNarrativeResult)
-    def get_run_demo_narrative(run_id: str) -> DemoNarrativeResult:
-        try:
-            require_governance("GET /runs/{run_id}/demo-narrative", run_id=run_id)
-            return runtime_container.demo_narrative.get_demo_narrative(run_id)
-        except RuntimeValidationError as exc:
-            raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
-
     @api.get("/runs/{run_id}/support-bundle", response_model=AgentSupportBundleResult)
     def get_run_support_bundle(run_id: str) -> AgentSupportBundleResult:
         try:
@@ -404,38 +387,6 @@ def create_app(runtime: RuntimeContainer | None = None) -> FastAPI:
         try:
             require_governance("POST /run-revalidations", run_id=request.run_id)
             return runtime_container.revalidation.check_current_context(request)
-        except RuntimeValidationError as exc:
-            raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
-
-    @api.post("/autopilot-previews", response_model=SampleAutopilotPreviewResult)
-    def preview_sample_autopilot(request: SampleAutopilotPreviewRequest) -> SampleAutopilotPreviewResult:
-        try:
-            require_governance("POST /autopilot-previews", run_id=request.run_id)
-            return runtime_container.sample_autopilot.preview_autopilot(request)
-        except RuntimeValidationError as exc:
-            raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
-
-    @api.post("/autopilot-steps", response_model=SampleAutopilotStepResult)
-    def advance_sample_autopilot_step(request: SampleAutopilotStepRequest) -> SampleAutopilotStepResult:
-        try:
-            require_governance("POST /autopilot-steps", run_id=request.run_id)
-            return runtime_container.sample_autopilot_step.advance_one_step(request)
-        except RuntimeValidationError as exc:
-            raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
-
-    @api.post("/sample-reset-previews", response_model=SampleResetPreviewResult)
-    def preview_sample_reset(request: SampleResetPreviewRequest) -> SampleResetPreviewResult:
-        try:
-            require_governance("POST /sample-reset-previews", run_id=request.run_id)
-            return runtime_container.sample_reset.preview_reset(request)
-        except RuntimeValidationError as exc:
-            raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
-
-    @api.post("/sample-resets", response_model=SampleResetResult)
-    def reset_sample_demo(request: SampleResetRequest) -> SampleResetResult:
-        try:
-            require_governance("POST /sample-resets", run_id=request.run_id)
-            return runtime_container.sample_reset.reset_sample(request)
         except RuntimeValidationError as exc:
             raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
 
