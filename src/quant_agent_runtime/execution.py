@@ -85,8 +85,9 @@ class ExecutionService:
             capability_id=capability_id or None,
         )
         existing = _existing_successful_result(entry, request.step_id, capability_id, app_id)
+        existing_running = _existing_running_result(entry, request.step_id, capability_id, app_id)
         existing_failure = _existing_failure_result(entry, request.step_id, capability_id, app_id)
-        existing_result = existing or existing_failure
+        existing_result = existing or existing_running or existing_failure
         if existing_result is not None:
             action_request = _latest_execution_action_request(
                 entry,
@@ -498,6 +499,25 @@ def _existing_successful_result(
             and record.get("capability_id") == capability_id
             and record.get("app_id") == app_id
             and record.get("execution_status") in {"succeeded", "succeeded_with_warnings"}
+        ):
+            return record
+    return None
+
+
+def _existing_running_result(
+    entry: LedgerEntry,
+    step_id: str,
+    capability_id: str,
+    app_id: str,
+) -> dict[str, Any] | None:
+    for record in reversed(entry.action_results):
+        if not isinstance(record, dict):
+            continue
+        if (
+            record.get("step_id") == step_id
+            and record.get("capability_id") == capability_id
+            and record.get("app_id") == app_id
+            and record.get("execution_status") == "running"
         ):
             return record
     return None

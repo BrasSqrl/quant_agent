@@ -92,6 +92,13 @@ def test_openai_plan_provider_uses_server_side_authorization_and_parses_structur
     assert captured["url"] == "https://api.openai.test/v1/responses"
     assert captured["authorization"] == f"Bearer {SECRET_KEY}"
     assert captured["body"]["model"] == "gpt-5.4-nano"
+    assert captured["body"]["text"]["format"]["type"] == "json_schema"
+    assert captured["body"]["text"]["format"]["schema"]["required"] == [
+        "user_goal_summary",
+        "assumptions",
+        "missing_inputs",
+        "steps",
+    ]
     assert result.raw_output["user_goal_summary"] == "Safe model-backed plan"
     assert result.metadata.provider == "openai"
     assert result.metadata.model == "gpt-5.4-nano"
@@ -131,6 +138,42 @@ def test_ollama_plan_provider_uses_configured_local_endpoint_without_authorizati
     assert captured["body"]["model"] == "llama-test"
     assert result.raw_output["steps"][0]["capability_id"] == "quant_suite.inspect_lifecycle_context"
     assert result.metadata.provider == "ollama"
+
+
+def test_openai_plan_provider_parses_typed_json_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("QUANT_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("QUANT_LLM_MODEL", "gpt-5.4-nano")
+    monkeypatch.setenv("OPENAI_API_KEY", SECRET_KEY)
+
+    def fake_urlopen(_request: Any, timeout: int) -> _Response:
+        assert timeout > 0
+        return _Response(
+            {
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_json",
+                                "json": _valid_provider_output(),
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr(
+        "quant_agent_runtime.model_gateway.shared_llm.urllib.request.urlopen",
+        fake_urlopen,
+    )
+
+    result = SharedLlmPlanProvider(runtime_provider_status()).generate_plan(_provider_request())
+
+    assert result.raw_output["user_goal_summary"] == "Safe model-backed plan"
+    assert result.raw_output["steps"][0]["operation"] == "plan"
 
 
 def test_missing_openai_key_falls_back_to_fake_provider_without_network_call(

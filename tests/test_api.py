@@ -63,7 +63,9 @@ class FakePreflightAppClient:
     ) -> None:
         self.response = response or _valid_preflight_response()
         self.responses_by_capability = responses_by_capability or {}
+        self.has_explicit_execution_response = execution_response is not None
         self.execution_response = execution_response or _valid_action_result()
+        self._default_execution_response = self.execution_response
         self.execution_responses_by_capability = execution_responses_by_capability or {}
         self.execution_error = execution_error
         self.reset_response = reset_response or _valid_sample_reset_response()
@@ -140,7 +142,11 @@ class FakePreflightAppClient:
         if self.execution_error is not None:
             raise self.execution_error
         response = self.execution_responses_by_capability.get(capability_id)
-        if response is None and self.execution_response.get("capability_id") == capability_id:
+        if (
+            response is None
+            and (self.has_explicit_execution_response or self.execution_response is not self._default_execution_response)
+            and self.execution_response.get("capability_id") == capability_id
+        ):
             response = self.execution_response
         if response is None and capability_id.startswith("quant_data."):
             action_request = payload.get("action_request") if isinstance(payload, dict) else {}
@@ -150,13 +156,25 @@ class FakePreflightAppClient:
                 step_id=str(action_request.get("step_id") or "step_data"),
             )
         if response is None and capability_id.startswith("quant_studio."):
-            response = _valid_action_result(capability_id=capability_id)
+            action_request = payload.get("action_request") if isinstance(payload, dict) else {}
+            response = _valid_action_result(
+                capability_id=capability_id,
+                app_id="quant_studio",
+                step_id=str(action_request.get("step_id") or "step_studio"),
+            )
         if response is None and capability_id.startswith("quant_documentation."):
             action_request = payload.get("action_request") if isinstance(payload, dict) else {}
             response = _valid_action_result(
                 capability_id=capability_id,
                 app_id="quant_documentation",
                 step_id=str(action_request.get("step_id") or "step_documentation"),
+            )
+        if response is None and capability_id.startswith("quant_monitoring."):
+            action_request = payload.get("action_request") if isinstance(payload, dict) else {}
+            response = _valid_action_result(
+                capability_id=capability_id,
+                app_id="quant_monitoring",
+                step_id=str(action_request.get("step_id") or "step_monitoring"),
             )
         return copy.deepcopy(response or self.execution_response)
 
@@ -288,8 +306,12 @@ def _valid_preflight_response(
         evidence_check_id = "target_summary_present"
         summary_key = "target_summary"
     else:
-        reference_type = "monitoring_bundle"
-        reference_id = "bundle_ref_test"
+        if capability_id == "quant_monitoring.run_monitoring_review":
+            reference_type = "bundle_validation_summary"
+            reference_id = "bundle_validation_summary_test"
+        else:
+            reference_type = "monitoring_bundle"
+            reference_id = "bundle_ref_test"
         evidence_check_id = "bundle_summary_present"
         summary_key = "bundle_summary"
     return {
@@ -337,6 +359,14 @@ def _preflight_references_for(capability_id: str, reference_type: str, reference
                 "reference_type": "preflight_summary",
                 "reference_id": "preflight_summary_test",
                 "label": "Source preflight summary",
+            }
+        )
+    if capability_id == "quant_monitoring.validate_bundle":
+        references.append(
+            {
+                "reference_type": "bundle_validation_summary",
+                "reference_id": "bundle_validation_summary_test",
+                "label": "Bundle validation summary",
             }
         )
     return references
@@ -415,6 +445,26 @@ def _valid_action_result(
             "reference_id": "documentation_review_package_test",
             "label": "Documentation review package",
         },
+        "quant_monitoring.inspect_bundle": {
+            "reference_type": "bundle_summary",
+            "reference_id": "bundle_summary_test",
+            "label": "Monitoring bundle summary",
+        },
+        "quant_monitoring.prepare_profile_draft": {
+            "reference_type": "monitoring_profile_draft",
+            "reference_id": "monitoring_profile_draft_test",
+            "label": "Monitoring profile draft",
+        },
+        "quant_monitoring.run_monitoring_review": {
+            "reference_type": "monitoring_run",
+            "reference_id": "monitoring_run_test",
+            "label": "Monitoring run",
+        },
+        "quant_monitoring.create_feedback_signal": {
+            "reference_type": "feedback_signal",
+            "reference_id": "feedback_signal_test",
+            "label": "Feedback signal",
+        },
     }
     output_reference = output_reference_by_capability.get(
         capability_id,
@@ -443,12 +493,16 @@ def _valid_action_result(
                 if app_id == "quant_data"
                 else "package_summary"
                 if app_id == "quant_documentation"
+                else "bundle_summary"
+                if app_id == "quant_monitoring"
                 else "target_summary"
             ): (
                 "Reviewed source summary."
                 if app_id == "quant_data"
                 else "Documentation package summary is ready."
                 if app_id == "quant_documentation"
+                else "Monitoring bundle summary is ready."
+                if app_id == "quant_monitoring"
                 else "Default flag is the candidate target."
             ),
             "lifecycle_id": "lifecycle_test",
@@ -851,6 +905,42 @@ def _capabilities_payload(app_id: str, capabilities: list[dict[str, Any]] | None
         elif app_id == "quant_monitoring":
             capabilities = [
                 {
+                    "capability_id": "quant_monitoring.inspect_bundle",
+                    "app_id": "quant_monitoring",
+                    "version": "1.0",
+                    "display_name": "Inspect monitoring bundle",
+                    "summary": "Inspects safe monitoring bundle references before setup.",
+                    "risk_tier": "read_only",
+                    "enabled": True,
+                    "preflight_required": False,
+                    "confirmation_required": False,
+                    "execution_supported": True,
+                    "idempotent": True,
+                    "reversible": True,
+                    "side_effects": ["none_read_only"],
+                    "input_schema": {"required_fields": ["bundle_summary"]},
+                    "output_schema": {"safe_reference_types": ["bundle_summary"]},
+                    "data_policy": "summaries_and_references_only",
+                },
+                {
+                    "capability_id": "quant_monitoring.prepare_profile_draft",
+                    "app_id": "quant_monitoring",
+                    "version": "1.0",
+                    "display_name": "Prepare monitoring profile draft",
+                    "summary": "Creates a reviewable monitoring profile or threshold draft from safe bundle summaries.",
+                    "risk_tier": "draft_only",
+                    "enabled": True,
+                    "preflight_required": False,
+                    "confirmation_required": True,
+                    "execution_supported": True,
+                    "idempotent": True,
+                    "reversible": True,
+                    "side_effects": ["draft_only_after_confirmation"],
+                    "input_schema": {"required_fields": ["bundle_summary"]},
+                    "output_schema": {"safe_reference_types": ["monitoring_profile_draft"]},
+                    "data_policy": "summaries_and_references_only",
+                },
+                {
                     "capability_id": "quant_monitoring.validate_bundle",
                     "app_id": "quant_monitoring",
                     "version": "1.0-draft",
@@ -860,6 +950,7 @@ def _capabilities_payload(app_id: str, capabilities: list[dict[str, Any]] | None
                     "enabled": True,
                     "preflight_required": True,
                     "confirmation_required": False,
+                    "execution_supported": False,
                     "idempotent": True,
                     "reversible": True,
                     "side_effects": ["none"],
@@ -868,7 +959,43 @@ def _capabilities_payload(app_id: str, capabilities: list[dict[str, Any]] | None
                         "safe_reference_types": ["bundle_validation_summary", "monitoring_bundle"]
                     },
                     "data_policy": "summaries_and_references_only",
-                }
+                },
+                {
+                    "capability_id": "quant_monitoring.run_monitoring_review",
+                    "app_id": "quant_monitoring",
+                    "version": "1.0",
+                    "display_name": "Run monitoring review",
+                    "summary": "Runs an app-owned monitoring review from safe bundle and validation references.",
+                    "risk_tier": "expensive_compute",
+                    "enabled": True,
+                    "preflight_required": True,
+                    "confirmation_required": True,
+                    "execution_supported": True,
+                    "idempotent": False,
+                    "reversible": False,
+                    "side_effects": ["app_owned_monitoring_compute_after_confirmation"],
+                    "input_schema": {"required_fields": ["bundle_summary"]},
+                    "output_schema": {"safe_reference_types": ["monitoring_run"]},
+                    "data_policy": "summaries_and_references_only",
+                },
+                {
+                    "capability_id": "quant_monitoring.create_feedback_signal",
+                    "app_id": "quant_monitoring",
+                    "version": "1.0",
+                    "display_name": "Create feedback signal",
+                    "summary": "Creates a safe feedback or retrain signal reference from monitoring review summaries.",
+                    "risk_tier": "reversible_write",
+                    "enabled": True,
+                    "preflight_required": False,
+                    "confirmation_required": True,
+                    "execution_supported": True,
+                    "idempotent": True,
+                    "reversible": True,
+                    "side_effects": ["app_owned_feedback_reference_write_after_confirmation"],
+                    "input_schema": {"required_fields": ["bundle_summary"]},
+                    "output_schema": {"safe_reference_types": ["feedback_signal"]},
+                    "data_policy": "summaries_and_references_only",
+                },
             ]
         else:
             capabilities = []
@@ -1182,6 +1309,31 @@ def _step_for_capability(plan_payload: dict[str, Any], capability_id: str) -> di
         for step in plan_payload["plan"]["proposed_steps"]
         if step["capability_id"] == capability_id
     )
+
+
+def _full_lifecycle_capability_ids() -> list[str]:
+    return [
+        "quant_data.register_source_reference",
+        "quant_data.run_source_preflight",
+        "quant_data.create_eda_plan",
+        "quant_data.run_eda_review",
+        "quant_data.export_eda_handoff",
+        "quant_studio.run_model_readiness_check",
+        "quant_studio.prepare_model_config_draft",
+        "quant_studio.fit_candidate_model",
+        "quant_studio.compare_candidate_runs",
+        "quant_studio.create_documentation_package",
+        "quant_documentation.inspect_package",
+        "quant_documentation.create_draft_workspace",
+        "quant_documentation.draft_section",
+        "quant_documentation.find_unsupported_claims",
+        "quant_documentation.export_markdown_review_package",
+        "quant_monitoring.inspect_bundle",
+        "quant_monitoring.prepare_profile_draft",
+        "quant_monitoring.validate_bundle",
+        "quant_monitoring.run_monitoring_review",
+        "quant_monitoring.create_feedback_signal",
+    ]
 
 
 def _write_governance_policy_pack(
@@ -1594,6 +1746,7 @@ def test_runtime_manifest_returns_supported_modes(monkeypatch: pytest.MonkeyPatc
         "quant_data.run_eda_review",
         "quant_studio.run_model_readiness_check",
         "quant_studio.fit_candidate_model",
+        "quant_monitoring.run_monitoring_review",
     ]
     assert manifest["capability_discovery"]["discovered_apps"] == [
         "quant_data",
@@ -1609,6 +1762,7 @@ def test_runtime_manifest_returns_supported_modes(monkeypatch: pytest.MonkeyPatc
         "quant_data.run_eda_review",
         "quant_studio.run_model_readiness_check",
         "quant_studio.fit_candidate_model",
+        "quant_monitoring.run_monitoring_review",
     ]
     assert manifest["supported_execution_capabilities"] == [
         "quant_studio.prepare_model_config_draft",
@@ -1624,6 +1778,10 @@ def test_runtime_manifest_returns_supported_modes(monkeypatch: pytest.MonkeyPatc
         "quant_documentation.draft_section",
         "quant_documentation.find_unsupported_claims",
         "quant_documentation.export_markdown_review_package",
+        "quant_monitoring.inspect_bundle",
+        "quant_monitoring.prepare_profile_draft",
+        "quant_monitoring.run_monitoring_review",
+        "quant_monitoring.create_feedback_signal",
     ]
     assert manifest["capability_discovery"]["supported_execution_capabilities"] == [
         "quant_studio.prepare_model_config_draft",
@@ -1639,6 +1797,10 @@ def test_runtime_manifest_returns_supported_modes(monkeypatch: pytest.MonkeyPatc
         "quant_documentation.draft_section",
         "quant_documentation.find_unsupported_claims",
         "quant_documentation.export_markdown_review_package",
+        "quant_monitoring.inspect_bundle",
+        "quant_monitoring.prepare_profile_draft",
+        "quant_monitoring.run_monitoring_review",
+        "quant_monitoring.create_feedback_signal",
     ]
     governance = manifest["governance_summary"]
     assert governance["policy_pack_id"] == "quant_agent_local_governance_policy_pack_v1"
@@ -6875,6 +7037,7 @@ def test_runtime_manifest_rejects_unsafe_capability_discovery_payload() -> None:
         "quant_monitoring.validate_bundle",
         "quant_studio.run_model_readiness_check",
         "quant_studio.fit_candidate_model",
+        "quant_monitoring.run_monitoring_review",
     ]
     assert discovery["reconciliation_warnings"][0]["code"] == "unsafe_capability_discovery_payload"
     assert "private\\raw.csv" not in response.text
@@ -6907,6 +7070,7 @@ def test_runtime_manifest_warns_on_unknown_app_capability_without_supporting_it(
         "quant_monitoring.validate_bundle",
         "quant_studio.run_model_readiness_check",
         "quant_studio.fit_candidate_model",
+        "quant_monitoring.run_monitoring_review",
     ]
     warning_codes = {warning["code"] for warning in discovery["reconciliation_warnings"]}
     assert "missing_canonical_capability" in warning_codes
@@ -7008,6 +7172,7 @@ def test_runtime_manifest_warns_on_malformed_capability_entries() -> None:
         "quant_monitoring.validate_bundle",
         "quant_studio.run_model_readiness_check",
         "quant_studio.fit_candidate_model",
+        "quant_monitoring.run_monitoring_review",
     ]
     warning_codes = {warning["code"] for warning in discovery["reconciliation_warnings"]}
     assert "malformed_capability_entry" in warning_codes
@@ -11315,10 +11480,188 @@ def test_manifest_advertises_scoped_workflow_runner() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["workflow_run_support_level"] == "scoped_template_guided_manual_and_until_blocked"
+    assert payload["workflow_scope_resolution_support_level"] == "deterministic_prompt_to_workflow_scope_v1"
     assert payload["workflow_template_support_level"] == "canonical_suite_workflow_templates_v1"
+    assert payload["long_running_action_support_level"] == "ledgered_running_app_action_reference_v1"
+    assert "POST /workflow-scope-resolutions" in payload["supported_routes"]
     assert "POST /workflow-runs" in payload["supported_routes"]
     assert "POST /workflow-runs/{run_id}/advance" in payload["supported_routes"]
     assert "app_workflow" in payload["supported_workflow_scopes"]
+
+
+def test_workflow_scope_resolution_resolves_full_lifecycle_prompt() -> None:
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
+
+    response = client.post(
+        "/workflow-scope-resolutions",
+        json={
+            "goal": "Run the full workflow from Data to Studio to Documentation to Monitoring.",
+            "context_summary": _safe_lifecycle_context(lifecycle_summary="Lifecycle starts from safe summaries."),
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ledger_recorded"] is False
+    assert payload["resolution_summary"]["strategy"] == "full_lifecycle_keywords"
+    assert payload["resolved_request"]["workflow_scope"] == "full_lifecycle"
+    assert payload["resolved_request"]["source_app"] == "quant_suite"
+    assert payload["workflow_scope"]["selected_template_ids"] == ["full_lifecycle_default"]
+    assert payload["workflow_scope"]["selected_capability_ids"] == _full_lifecycle_capability_ids()
+
+
+def test_workflow_scope_resolution_resolves_app_steps_1_to_5_prompt() -> None:
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
+
+    response = client.post(
+        "/workflow-scope-resolutions",
+        json={
+            "goal": "Run Quant Studio steps 1 through 5.",
+            "context_summary": _safe_lifecycle_context(),
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["resolved_request"]["workflow_scope"] == "app_workflow"
+    assert payload["resolved_request"]["source_app"] == "quant_studio"
+    assert payload["workflow_scope"]["selected_template_ids"] == ["quant_studio_steps_1_5"]
+    assert payload["workflow_scope"]["selected_capability_ids"] == [
+        "quant_studio.run_model_readiness_check",
+        "quant_studio.prepare_model_config_draft",
+        "quant_studio.fit_candidate_model",
+        "quant_studio.compare_candidate_runs",
+        "quant_studio.create_documentation_package",
+    ]
+
+
+def test_workflow_scope_resolution_resolves_stage_range_prompt() -> None:
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
+
+    response = client.post(
+        "/workflow-scope-resolutions",
+        json={
+            "goal": "Run Quant Studio steps 2-4 only.",
+            "context_summary": _safe_lifecycle_context(),
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["resolved_request"]["workflow_scope"] == "stage_range"
+    assert payload["resolved_request"]["source_app"] == "quant_studio"
+    assert payload["resolved_request"]["start_stage"] == "2"
+    assert payload["resolved_request"]["end_stage"] == "4"
+    assert payload["workflow_scope"]["selected_capability_ids"] == [
+        "quant_studio.prepare_model_config_draft",
+        "quant_studio.fit_candidate_model",
+        "quant_studio.compare_candidate_runs",
+    ]
+
+
+def test_workflow_scope_resolution_resolves_capability_set_prompt() -> None:
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
+
+    response = client.post(
+        "/workflow-scope-resolutions",
+        json={
+            "goal": "Just validate the Monitoring bundle.",
+            "context_summary": _safe_lifecycle_context(lifecycle_state="monitoring_ready"),
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["resolved_request"]["workflow_scope"] == "capability_set"
+    assert payload["resolved_request"]["requested_capability_ids"] == ["quant_monitoring.validate_bundle"]
+    assert payload["workflow_scope"]["selected_template_ids"] == []
+    assert payload["workflow_scope"]["selected_capability_ids"] == ["quant_monitoring.validate_bundle"]
+
+
+def test_workflow_scope_resolution_resolves_studio_fit_shorthand_to_safe_stage_range() -> None:
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
+
+    response = client.post(
+        "/workflow-scope-resolutions",
+        json={
+            "goal": "Fit a model from this Studio handoff.",
+            "source_app": "quant_studio",
+            "context_summary": _safe_lifecycle_context(),
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["resolution_summary"]["strategy"] == "studio_fit_stage_range"
+    assert payload["resolved_request"]["workflow_scope"] == "stage_range"
+    assert payload["resolved_request"]["start_stage"] == "lifecycle_handoff_intake"
+    assert payload["resolved_request"]["end_stage"] == "candidate_model_fit"
+    assert payload["workflow_scope"]["selected_capability_ids"] == [
+        "quant_studio.run_model_readiness_check",
+        "quant_studio.prepare_model_config_draft",
+        "quant_studio.fit_candidate_model",
+    ]
+
+
+def test_workflow_scope_resolution_rejects_unknown_stage() -> None:
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
+
+    response = client.post(
+        "/workflow-scope-resolutions",
+        json={
+            "goal": "Run Quant Studio step 9.",
+            "context_summary": _safe_lifecycle_context(),
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["errors"][0]["code"] == "workflow_stage_not_found"
+
+
+def test_workflow_scope_resolution_rejects_unknown_quant_app() -> None:
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
+
+    response = client.post(
+        "/workflow-scope-resolutions",
+        json={
+            "goal": "Run Quant Pricing steps 1-5.",
+            "context_summary": _safe_lifecycle_context(),
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["errors"][0]["code"] == "workflow_scope_unknown_app"
+
+
+def test_workflow_scope_resolution_rejects_unsafe_prompt_content() -> None:
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
+
+    response = client.post(
+        "/workflow-scope-resolutions",
+        json={
+            "goal": "Run Quant Studio steps 1-5 using C:\\Users\\matth\\Desktop\\secret.csv.",
+            "context_summary": _safe_lifecycle_context(),
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["errors"][0]["code"] == "unsafe_workflow_scope_resolution_request"
+    assert "secret.csv" not in response.text
+
+
+def test_workflow_scope_resolution_rejects_extra_browser_payload_fields() -> None:
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
+
+    response = client.post(
+        "/workflow-scope-resolutions",
+        json={
+            "goal": "Run Quant Studio steps 1-5.",
+            "context_summary": _safe_lifecycle_context(),
+            "action_payload": {"execution_permitted": True},
+        },
+    )
+
+    assert response.status_code == 422
 
 
 def test_workflow_run_studio_scope_uses_all_enabled_capabilities_without_gaps() -> None:
@@ -11414,6 +11757,66 @@ def test_workflow_run_documentation_scope_uses_all_enabled_capabilities_without_
     assert [step["capability_id"] for step in payload["plan"]["proposed_steps"]] == scope["selected_capability_ids"]
 
 
+def test_workflow_run_monitoring_scope_uses_all_enabled_capabilities_without_gaps() -> None:
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
+
+    response = client.post(
+        "/workflow-runs",
+        json={
+            "goal": "Run only Quant Monitoring steps 1 through 5.",
+            "workflow_scope": "app_workflow",
+            "source_app": "quant_monitoring",
+            "context_summary": _safe_lifecycle_context(
+                lifecycle_state="monitoring_ready",
+                lifecycle_summary="Lifecycle has safe monitoring bundle summaries.",
+            ),
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    scope = payload["workflow_scope"]
+    assert scope["selected_template_ids"] == ["quant_monitoring_steps_1_5"]
+    assert scope["selected_capability_ids"] == [
+        "quant_monitoring.inspect_bundle",
+        "quant_monitoring.prepare_profile_draft",
+        "quant_monitoring.validate_bundle",
+        "quant_monitoring.run_monitoring_review",
+        "quant_monitoring.create_feedback_signal",
+    ]
+    assert scope["omitted_capability_ids"] == []
+    assert scope["workflow_gaps"] == []
+    assert [step["capability_id"] for step in payload["plan"]["proposed_steps"]] == scope["selected_capability_ids"]
+
+
+def test_workflow_run_full_lifecycle_uses_complete_chain_without_gaps() -> None:
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
+    context = _safe_lifecycle_context(lifecycle_summary="Lifecycle starts from safe source summaries.")
+    context.pop("target_summary")
+    context.pop("package_summary")
+    context.pop("bundle_summary")
+
+    response = client.post(
+        "/workflow-runs",
+        json={
+            "goal": "Run the full Data to Studio to Documentation to Monitoring workflow.",
+            "workflow_scope": "full_lifecycle",
+            "context_summary": context,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    scope = payload["workflow_scope"]
+    expected = _full_lifecycle_capability_ids()
+    assert scope["selected_template_ids"] == ["full_lifecycle_default"]
+    assert scope["selected_capability_ids"] == expected
+    assert scope["omitted_capability_ids"] == []
+    assert scope["workflow_gaps"] == []
+    assert [step["capability_id"] for step in payload["plan"]["proposed_steps"]] == expected
+    assert payload["plan"]["status"] == "valid"
+
+
 def test_workflow_run_stage_range_limits_selected_app_steps() -> None:
     client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
 
@@ -11435,6 +11838,204 @@ def test_workflow_run_stage_range_limits_selected_app_steps() -> None:
         "quant_studio.prepare_model_config_draft"
     ]
     assert payload["workflow_scope"]["workflow_gaps"] == []
+
+
+@pytest.mark.parametrize(
+    ("source_app", "start_stage", "end_stage", "expected_template", "expected_capabilities", "context_summary"),
+    [
+        (
+            "quant_data",
+            "eda_plan",
+            "handoff_export",
+            "quant_data_steps_1_5",
+            [
+                "quant_data.create_eda_plan",
+                "quant_data.run_eda_review",
+                "quant_data.export_eda_handoff",
+            ],
+            _safe_lifecycle_context(lifecycle_state="data_review"),
+        ),
+        (
+            "quant_studio",
+            "model_config_readiness",
+            "candidate_comparison",
+            "quant_studio_steps_1_5",
+            [
+                "quant_studio.prepare_model_config_draft",
+                "quant_studio.fit_candidate_model",
+                "quant_studio.compare_candidate_runs",
+            ],
+            _safe_lifecycle_context(),
+        ),
+        (
+            "quant_documentation",
+            "draft_workspace",
+            "citation_claim_review",
+            "quant_documentation_steps_1_5",
+            [
+                "quant_documentation.create_draft_workspace",
+                "quant_documentation.draft_section",
+                "quant_documentation.find_unsupported_claims",
+            ],
+            _safe_lifecycle_context(lifecycle_state="documentation_review")
+            | {"package_summary": _safe_documentation_package_summary()},
+        ),
+        (
+            "quant_monitoring",
+            "bundle_dataset_validation",
+            "bundle_dataset_validation",
+            "quant_monitoring_steps_1_5",
+            ["quant_monitoring.validate_bundle"],
+            _safe_lifecycle_context(lifecycle_state="monitoring_ready"),
+        ),
+    ],
+)
+def test_workflow_run_stage_range_certifies_requested_partial_scopes(
+    source_app: str,
+    start_stage: str,
+    end_stage: str,
+    expected_template: str,
+    expected_capabilities: list[str],
+    context_summary: dict[str, Any],
+) -> None:
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
+
+    response = client.post(
+        "/workflow-runs",
+        json={
+            "goal": f"Run only {source_app} from {start_stage} through {end_stage}.",
+            "workflow_scope": "stage_range",
+            "source_app": source_app,
+            "start_stage": start_stage,
+            "end_stage": end_stage,
+            "context_summary": context_summary,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    scope = payload["workflow_scope"]
+    assert scope["selected_template_ids"] == [expected_template]
+    assert scope["selected_capability_ids"] == expected_capabilities
+    assert scope["omitted_capability_ids"] == []
+    assert scope["workflow_gaps"] == []
+    assert [step["capability_id"] for step in payload["plan"]["proposed_steps"]] == expected_capabilities
+
+
+def test_workflow_run_stage_range_rejects_unknown_stage() -> None:
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
+
+    response = client.post(
+        "/workflow-runs",
+        json={
+            "goal": "Run an unknown Studio slice.",
+            "workflow_scope": "stage_range",
+            "source_app": "quant_studio",
+            "start_stage": "not_a_stage",
+            "end_stage": "candidate_model_fit",
+            "context_summary": _safe_lifecycle_context(),
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["errors"][0]["code"] == "workflow_stage_not_found"
+
+
+def test_workflow_run_capability_set_selects_only_requested_capabilities() -> None:
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
+    requested = [
+        "quant_documentation.inspect_package",
+        "quant_monitoring.validate_bundle",
+    ]
+
+    response = client.post(
+        "/workflow-runs",
+        json={
+            "goal": "Inspect documentation and validate the monitoring bundle only.",
+            "workflow_scope": "capability_set",
+            "requested_capability_ids": requested,
+            "context_summary": _safe_lifecycle_context(lifecycle_state="monitoring_ready")
+            | {"package_summary": _safe_documentation_package_summary()},
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    scope = payload["workflow_scope"]
+    assert scope["selected_template_ids"] == []
+    assert scope["requested_capability_ids"] == requested
+    assert scope["selected_capability_ids"] == requested
+    assert scope["workflow_gaps"] == []
+    assert [step["capability_id"] for step in payload["plan"]["proposed_steps"]] == requested
+
+
+def test_workflow_run_capability_set_rejects_browser_supplied_action_payloads() -> None:
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
+
+    response = client.post(
+        "/workflow-runs",
+        json={
+            "goal": "Run selected actions.",
+            "workflow_scope": "capability_set",
+            "requested_capability_ids": ["quant_monitoring.validate_bundle"],
+            "context_summary": _safe_lifecycle_context(lifecycle_state="monitoring_ready"),
+            "action_payload": {"execution_permitted": True},
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_capability_set_advance_until_blocked_completes_only_selected_preflight() -> None:
+    app_client = FakePreflightAppClient()
+    client = TestClient(create_app(runtime_with_preflight_client(app_client)))
+    created = client.post(
+        "/workflow-runs",
+        json={
+            "goal": "Just validate the Monitoring bundle.",
+            "workflow_scope": "capability_set",
+            "requested_capability_ids": ["quant_monitoring.validate_bundle"],
+            "context_summary": _safe_lifecycle_context(lifecycle_state="monitoring_ready"),
+        },
+    ).json()
+
+    response = client.post(
+        f"/workflow-runs/{created['run_id']}/advance-until-blocked",
+        json={"advance_intent": "advance_workflow_until_blocked"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["advance_status"] == "completed"
+    assert payload["completed_action_count"] == 1
+    assert [call["capability_id"] for call in app_client.calls] == ["quant_monitoring.validate_bundle"]
+    assert app_client.execution_calls == []
+    assert payload["orchestration"]["current_step_id"] is None
+
+
+def test_stage_range_mid_workflow_missing_handoff_blocks_without_inventing_input() -> None:
+    app_client = FakePreflightAppClient()
+    client = TestClient(create_app(runtime_with_preflight_client(app_client)))
+    created = client.post(
+        "/workflow-runs",
+        json={
+            "goal": "Fit a candidate model without running the earlier Studio steps.",
+            "workflow_scope": "stage_range",
+            "source_app": "quant_studio",
+            "start_stage": "candidate_model_fit",
+            "end_stage": "candidate_model_fit",
+            "context_summary": _safe_lifecycle_context(),
+        },
+    ).json()
+
+    response = client.post(
+        f"/workflow-runs/{created['run_id']}/advance",
+        json={"advance_intent": "advance_workflow_one_step"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["errors"][0]["code"] == "missing_workflow_handoff_reference"
+    assert app_client.calls == []
 
 
 def test_workflow_advance_until_blocked_stops_at_manual_confirmation() -> None:
@@ -11511,6 +12112,31 @@ def test_documentation_workflow_advance_until_blocked_stops_at_draft_workspace_c
     assert payload["completed_action_count"] == 2
     assert payload["run_state"] == "waiting_for_confirmation"
     assert payload["last_result"]["capability_id"] == "quant_documentation.create_draft_workspace"
+
+
+def test_monitoring_workflow_advance_until_blocked_stops_at_profile_draft_confirmation() -> None:
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
+    created = client.post(
+        "/workflow-runs",
+        json={
+            "goal": "Run only Quant Monitoring steps 1 through 5.",
+            "workflow_scope": "app_workflow",
+            "source_app": "quant_monitoring",
+            "context_summary": _safe_lifecycle_context(lifecycle_state="monitoring_ready"),
+        },
+    ).json()
+
+    response = client.post(
+        f"/workflow-runs/{created['run_id']}/advance-until-blocked",
+        json={"advance_intent": "advance_workflow_until_blocked"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["advance_status"] == "manual_confirmation_required"
+    assert payload["completed_action_count"] == 2
+    assert payload["run_state"] == "waiting_for_confirmation"
+    assert payload["last_result"]["capability_id"] == "quant_monitoring.prepare_profile_draft"
 
 
 def test_studio_scoped_workflow_hands_draft_reference_to_fit_preflight() -> None:
@@ -11826,6 +12452,313 @@ def test_documentation_scoped_workflow_hands_documentation_references_forward() 
     )
 
 
+def test_monitoring_scoped_workflow_hands_monitoring_references_forward() -> None:
+    app_client = FakePreflightAppClient()
+    client = TestClient(create_app(runtime_with_preflight_client(app_client)))
+    created = client.post(
+        "/workflow-runs",
+        json={
+            "goal": "Run only Quant Monitoring steps 1 through 5.",
+            "workflow_scope": "app_workflow",
+            "source_app": "quant_monitoring",
+            "context_summary": _safe_lifecycle_context(lifecycle_state="monitoring_ready"),
+        },
+    ).json()
+    steps = created["plan"]["proposed_steps"]
+    profile_step = next(
+        step for step in steps if step["capability_id"] == "quant_monitoring.prepare_profile_draft"
+    )
+    review_step = next(
+        step for step in steps if step["capability_id"] == "quant_monitoring.run_monitoring_review"
+    )
+    feedback_step = next(
+        step for step in steps if step["capability_id"] == "quant_monitoring.create_feedback_signal"
+    )
+
+    inspect_preview = client.post(
+        f"/workflow-runs/{created['run_id']}/advance",
+        json={"advance_intent": "advance_workflow_one_step"},
+    )
+    assert inspect_preview.status_code == 200
+    assert inspect_preview.json()["selected_action"] == "preview_action_request"
+    inspect_execution = client.post(
+        f"/workflow-runs/{created['run_id']}/advance",
+        json={"advance_intent": "advance_workflow_one_step"},
+    )
+    assert inspect_execution.status_code == 200
+    assert inspect_execution.json()["selected_action"] == "execute_step"
+
+    profile_block = client.post(
+        f"/workflow-runs/{created['run_id']}/advance",
+        json={"advance_intent": "advance_workflow_one_step"},
+    )
+    assert profile_block.status_code == 200
+    assert profile_block.json()["advance_status"] == "manual_confirmation_required"
+
+    profile_confirmation = client.post(
+        "/confirmations",
+        json={
+            "run_id": created["run_id"],
+            "step_id": profile_step["step_id"],
+            "confirmation_intent": "approve_plan_step",
+        },
+    )
+    assert profile_confirmation.status_code == 200
+    profile_preview = client.post(
+        f"/workflow-runs/{created['run_id']}/advance",
+        json={"advance_intent": "advance_workflow_one_step"},
+    )
+    assert profile_preview.status_code == 200
+    assert profile_preview.json()["selected_action"] == "preview_action_request"
+    assert (
+        profile_preview.json()["delegated_result"]["result"]["action_request"]["action_input"]["bundle_summary"][
+            "reference_type"
+        ]
+        == "bundle_summary"
+    )
+    profile_execution = client.post(
+        f"/workflow-runs/{created['run_id']}/advance",
+        json={"advance_intent": "advance_workflow_one_step"},
+    )
+    assert profile_execution.status_code == 200
+    assert profile_execution.json()["selected_action"] == "execute_step"
+
+    validation_preflight = client.post(
+        f"/workflow-runs/{created['run_id']}/advance",
+        json={"advance_intent": "advance_workflow_one_step"},
+    )
+    assert validation_preflight.status_code == 200
+    assert validation_preflight.json()["selected_action"] == "run_preflight"
+    assert app_client.calls[-1]["capability_id"] == "quant_monitoring.validate_bundle"
+    assert (
+        app_client.calls[-1]["payload"]["action_input"]["monitoring_profile_draft"]["reference_type"]
+        == "monitoring_profile_draft"
+    )
+
+    review_preflight = client.post(
+        f"/workflow-runs/{created['run_id']}/advance",
+        json={"advance_intent": "advance_workflow_one_step"},
+    )
+    assert review_preflight.status_code == 200
+    assert review_preflight.json()["selected_action"] == "run_preflight"
+    assert app_client.calls[-1]["capability_id"] == "quant_monitoring.run_monitoring_review"
+    assert (
+        app_client.calls[-1]["payload"]["action_input"]["bundle_validation_summary"]["reference_type"]
+        == "bundle_validation_summary"
+    )
+
+    review_block = client.post(
+        f"/workflow-runs/{created['run_id']}/advance",
+        json={"advance_intent": "advance_workflow_one_step"},
+    )
+    assert review_block.status_code == 200
+    assert review_block.json()["advance_status"] == "manual_confirmation_required"
+    assert review_block.json()["capability_id"] == "quant_monitoring.run_monitoring_review"
+
+    review_confirmation = client.post(
+        "/confirmations",
+        json={
+            "run_id": created["run_id"],
+            "step_id": review_step["step_id"],
+            "confirmation_intent": "approve_plan_step",
+        },
+    )
+    assert review_confirmation.status_code == 200
+    review_preview = client.post(
+        f"/workflow-runs/{created['run_id']}/advance",
+        json={"advance_intent": "advance_workflow_one_step"},
+    )
+    assert review_preview.status_code == 200
+    assert (
+        review_preview.json()["delegated_result"]["result"]["action_request"]["action_input"][
+            "bundle_validation_summary"
+        ]["reference_type"]
+        == "bundle_validation_summary"
+    )
+    review_execution = client.post(
+        f"/workflow-runs/{created['run_id']}/advance",
+        json={"advance_intent": "advance_workflow_one_step"},
+    )
+    assert review_execution.status_code == 200
+
+    feedback_block = client.post(
+        f"/workflow-runs/{created['run_id']}/advance",
+        json={"advance_intent": "advance_workflow_one_step"},
+    )
+    assert feedback_block.status_code == 200
+    assert feedback_block.json()["advance_status"] == "manual_confirmation_required"
+    assert feedback_block.json()["capability_id"] == "quant_monitoring.create_feedback_signal"
+
+    feedback_confirmation = client.post(
+        "/confirmations",
+        json={
+            "run_id": created["run_id"],
+            "step_id": feedback_step["step_id"],
+            "confirmation_intent": "approve_plan_step",
+        },
+    )
+    assert feedback_confirmation.status_code == 200
+    feedback_preview = client.post(
+        f"/workflow-runs/{created['run_id']}/advance",
+        json={"advance_intent": "advance_workflow_one_step"},
+    )
+    assert feedback_preview.status_code == 200
+    assert (
+        feedback_preview.json()["delegated_result"]["result"]["action_request"]["action_input"]["monitoring_run"][
+            "reference_type"
+        ]
+        == "monitoring_run"
+    )
+
+
+def test_full_lifecycle_workflow_advances_across_apps_with_safe_handoffs() -> None:
+    app_client = FakePreflightAppClient()
+    client = TestClient(create_app(runtime_with_preflight_client(app_client)))
+    context = _safe_lifecycle_context(lifecycle_summary="Lifecycle starts from safe source summaries.")
+    context.pop("target_summary")
+    context.pop("package_summary")
+    context.pop("bundle_summary")
+    created = client.post(
+        "/workflow-runs",
+        json={
+            "goal": "Run the full Data to Studio to Documentation to Monitoring workflow.",
+            "workflow_scope": "full_lifecycle",
+            "context_summary": context,
+        },
+    ).json()
+
+    statuses: list[str] = []
+    for _index in range(90):
+        response = client.post(
+            f"/workflow-runs/{created['run_id']}/advance",
+            json={"advance_intent": "advance_workflow_one_step"},
+        )
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        statuses.append(payload["advance_status"])
+        if payload["advance_status"] == "completed":
+            break
+        if payload["advance_status"] == "manual_confirmation_required":
+            confirmation = client.post(
+                "/confirmations",
+                json={
+                    "run_id": created["run_id"],
+                    "step_id": payload["step_id"],
+                    "confirmation_intent": "approve_plan_step",
+                },
+            )
+            assert confirmation.status_code == 200, confirmation.text
+            continue
+        assert payload["advance_status"] == "advanced"
+    else:
+        pytest.fail("Full lifecycle workflow did not complete within the expected advance budget.")
+
+    assert statuses[-1] == "completed"
+    assert any(call["capability_id"] == "quant_data.run_eda_review" for call in app_client.calls)
+    assert app_client.execution_calls[-1]["capability_id"] == "quant_monitoring.create_feedback_signal"
+
+    studio_readiness_call = next(
+        call for call in app_client.calls if call["capability_id"] == "quant_studio.run_model_readiness_check"
+    )
+    studio_readiness_input = studio_readiness_call["payload"]["action_input"]
+    assert studio_readiness_input["eda_handoff"]["reference_type"] == "eda_handoff"
+    assert studio_readiness_input["target_summary"].startswith("Target summary from EDA handoff")
+
+    documentation_inspect_call = next(
+        call for call in app_client.execution_calls if call["capability_id"] == "quant_documentation.inspect_package"
+    )
+    documentation_input = documentation_inspect_call["payload"]["action_request"]["action_input"]
+    assert documentation_input["documentation_package"]["reference_type"] == "documentation_package"
+    assert documentation_input["package_summary"]["documentation_package_id"] == "documentation_package_test"
+
+    monitoring_inspect_call = next(
+        call for call in app_client.execution_calls if call["capability_id"] == "quant_monitoring.inspect_bundle"
+    )
+    monitoring_input = monitoring_inspect_call["payload"]["action_request"]["action_input"]
+    assert monitoring_input["monitoring_bundle"]["reference_type"] == "monitoring_bundle"
+    assert monitoring_input["bundle_summary"]["bundle_id"] == "monitoring_bundle_test"
+
+
+def test_workflow_runner_ledgers_running_action_result_and_stops_idempotently() -> None:
+    running_result = _valid_action_result(
+        "running",
+        capability_id="quant_documentation.inspect_package",
+        app_id="quant_documentation",
+        step_id="step_1",
+    )
+    running_result["output_references"] = []
+    running_result["app_run_reference"] = {
+        "reference_type": "app_run",
+        "reference_id": "documentation_inspect_pending_test",
+        "status": "running",
+        "label": "Documentation package inspection",
+    }
+    running_result["recommended_next_step"] = {
+        "label": "Refresh workflow status before advancing this step again.",
+        "target_app": "quant_agent",
+        "review_only": True,
+    }
+    app_client = FakePreflightAppClient(
+        execution_responses_by_capability={"quant_documentation.inspect_package": running_result}
+    )
+    client = TestClient(create_app(runtime_with_preflight_client(app_client)))
+    created = client.post(
+        "/workflow-runs",
+        json={
+            "goal": "Run only Quant Documentation steps 1 through 5.",
+            "workflow_scope": "app_workflow",
+            "source_app": "quant_documentation",
+            "context_summary": _safe_lifecycle_context(lifecycle_state="documentation_review")
+            | {"package_summary": _safe_documentation_package_summary()},
+        },
+    ).json()
+    step_id = created["plan"]["proposed_steps"][0]["step_id"]
+
+    preview = client.post(
+        f"/workflow-runs/{created['run_id']}/advance",
+        json={"advance_intent": "advance_workflow_one_step"},
+    )
+    execution = client.post(
+        f"/workflow-runs/{created['run_id']}/advance",
+        json={"advance_intent": "advance_workflow_one_step"},
+    )
+
+    assert preview.status_code == 200
+    assert preview.json()["selected_action"] == "preview_action_request"
+    assert execution.status_code == 200
+    execution_payload = execution.json()
+    assert execution_payload["selected_action"] == "execute_step"
+    assert execution_payload["delegated_result"]["result"]["action_result"]["execution_status"] == "running"
+    assert execution_payload["run_state"] == "running"
+    assert execution_payload["orchestration"]["steps"][0]["status"] == "running"
+    assert execution_payload["orchestration"]["steps"][0]["allowed_actions"] == []
+    assert (
+        execution_payload["orchestration"]["steps"][0]["latest_action_result_reference"]["app_run_reference"][
+            "reference_id"
+        ]
+        == "documentation_inspect_pending_test"
+    )
+    assert len(app_client.execution_calls) == 1
+
+    duplicate_execution = client.post(
+        "/executions",
+        json={"run_id": created["run_id"], "step_id": step_id},
+    )
+    assert duplicate_execution.status_code == 200
+    assert duplicate_execution.json()["action_result"]["execution_status"] == "running"
+    assert duplicate_execution.json()["run_state"] == "running"
+    assert len(app_client.execution_calls) == 1
+
+    blocked = client.post(
+        f"/workflow-runs/{created['run_id']}/advance",
+        json={"advance_intent": "advance_workflow_one_step"},
+    )
+    assert blocked.status_code == 200
+    assert blocked.json()["advance_status"] == "blocked"
+    assert blocked.json()["delegated_result"]["step_status"] == "running"
+    assert len(app_client.execution_calls) == 1
+
+
 def test_data_preflight_blocks_before_source_registration_confirmation() -> None:
     client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
     created = client.post(
@@ -11869,6 +12802,30 @@ def test_documentation_workflow_blocks_when_required_handoff_reference_is_missin
     response = client.post(
         "/action-requests",
         json={"run_id": created["run_id"], "step_id": draft_section_step["step_id"]},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["errors"][0]["code"] == "orchestration_step_not_ready"
+
+
+def test_monitoring_workflow_blocks_when_required_handoff_reference_is_missing() -> None:
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
+    created = client.post(
+        "/workflow-runs",
+        json={
+            "goal": "Run only Quant Monitoring steps 1 through 5.",
+            "workflow_scope": "app_workflow",
+            "source_app": "quant_monitoring",
+            "context_summary": _safe_lifecycle_context(lifecycle_state="monitoring_ready"),
+        },
+    ).json()
+    review_step = next(
+        step for step in created["plan"]["proposed_steps"] if step["capability_id"] == "quant_monitoring.run_monitoring_review"
+    )
+
+    response = client.post(
+        "/action-requests",
+        json={"run_id": created["run_id"], "step_id": review_step["step_id"]},
     )
 
     assert response.status_code == 422

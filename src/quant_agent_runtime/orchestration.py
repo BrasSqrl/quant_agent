@@ -339,6 +339,8 @@ def _ready_status(
             return "completed", None, None
         if status == "succeeded_with_warnings":
             return "completed_with_warnings", None, None
+        if status == "running":
+            return "running", "app_action_status", "The owning app accepted the action and reported a running app-owned operation."
         if status == "failed_recoverable":
             if latest_action_result.get("retry_allowed") is True:
                 return "failed_recoverable", "retry", "Retry the latest recoverable failed action result or create a plan revision."
@@ -399,6 +401,8 @@ def _run_state_from_summaries(
         return "preflight_blocked"
     if current_step.status == "needs_confirmation":
         return "waiting_for_confirmation"
+    if current_step.status == "running":
+        return "running"
     if current_step.status in {"ready_for_action_request", "ready_for_execution"}:
         return "ready_for_execution_preview"
     if current_step.status == "failed_recoverable":
@@ -614,6 +618,7 @@ def _action_result_reference(record: dict[str, Any] | None) -> dict[str, Any] | 
         "app_id": record.get("app_id"),
         "execution_status": record.get("execution_status"),
         "retry_allowed": record.get("retry_allowed"),
+        "app_run_reference": record.get("app_run_reference"),
         "completed_at_utc": record.get("completed_at_utc"),
     }
 

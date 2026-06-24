@@ -123,6 +123,9 @@ class WorkflowRunService:
             validation=PlanValidationResult(status="valid"),
         )
 
+    def resolve_scope_summary(self, request: WorkflowRunRequest) -> WorkflowRunScopeSummary:
+        return self._resolve_scope(request)
+
     def advance_one(
         self,
         run_id: str,
@@ -476,21 +479,41 @@ def _steps_in_range(raw_steps: Any, request: WorkflowRunRequest) -> list[dict[st
     steps = [item for item in raw_steps if isinstance(item, dict)] if isinstance(raw_steps, list) else []
     if request.workflow_scope != "stage_range":
         return steps
-    start = _stage_position(request.start_stage, steps, default=1)
-    end = _stage_position(request.end_stage, steps, default=max([_stage_number(step) for step in steps] or [1]))
+    start = _stage_position(request.start_stage, steps, default=1, field_name="start_stage")
+    end = _stage_position(
+        request.end_stage,
+        steps,
+        default=max([_stage_number(step) for step in steps] or [1]),
+        field_name="end_stage",
+    )
     low, high = sorted((start, end))
     return [step for step in steps if low <= _stage_number(step) <= high]
 
 
-def _stage_position(value: str | None, steps: list[dict[str, Any]], *, default: int) -> int:
+def _stage_position(
+    value: str | None,
+    steps: list[dict[str, Any]],
+    *,
+    default: int,
+    field_name: str,
+) -> int:
     if value is None or value == "":
         return default
     if value.isdigit():
-        return int(value)
+        position = int(value)
+        if position in {_stage_number(step) for step in steps}:
+            return position
+        raise _rejected(
+            "workflow_stage_not_found",
+            f"The requested {field_name} does not match a stage in the selected app workflow.",
+        )
     for step in steps:
         if step.get("stage_id") == value or step.get("step_key") == value:
             return _stage_number(step)
-    return default
+    raise _rejected(
+        "workflow_stage_not_found",
+        f"The requested {field_name} does not match a stage in the selected app workflow.",
+    )
 
 
 def _stage_number(step: dict[str, Any]) -> int:

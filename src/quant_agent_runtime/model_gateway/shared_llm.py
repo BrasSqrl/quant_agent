@@ -24,6 +24,50 @@ from quant_agent_runtime.provider_config import (
     DEFAULT_OPENAI_BASE_URL,
 )
 
+_PLAN_OUTPUT_JSON_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "user_goal_summary": {"type": "string"},
+        "assumptions": {"type": "array", "items": {"type": "string"}},
+        "missing_inputs": {"type": "array", "items": {"type": "string"}},
+        "steps": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "step_id": {"type": "string"},
+                    "title": {"type": "string"},
+                    "capability_id": {"type": "string"},
+                    "app_id": {"type": "string"},
+                    "risk_tier": {"type": "string"},
+                    "operation": {"const": "plan"},
+                    "preflight_required": {"type": "boolean"},
+                    "requires_confirmation": {"type": "boolean"},
+                    "action_input": {"type": "object"},
+                    "expected_artifacts": {"type": "array", "items": {"type": "string"}},
+                    "validation_checks": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": [
+                    "step_id",
+                    "title",
+                    "capability_id",
+                    "app_id",
+                    "risk_tier",
+                    "operation",
+                    "preflight_required",
+                    "requires_confirmation",
+                    "action_input",
+                    "expected_artifacts",
+                    "validation_checks",
+                ],
+            },
+        },
+    },
+    "required": ["user_goal_summary", "assumptions", "missing_inputs", "steps"],
+}
+
 
 class SharedLlmPlanProvider(ModelProvider):
     """Server-side OpenAI/Ollama planner with deterministic fake fallback."""
@@ -123,15 +167,16 @@ def _prompt_packet(
     if len(context_json) > max_context_chars:
         context_json = context_json[:max_context_chars]
     system = (
-        "You are the Quant Suite governed agent planner. Return only valid JSON. "
-        "Use only sanitized summaries and capability metadata. Do not include raw rows, "
-        "raw paths, URLs, bucket names, secrets, credentials, hidden commands, raw prompts, "
-        "provider responses, execution commands, or app mutations."
+        "You are the Quant Suite governed agent planner. Return exactly one JSON object "
+        "that satisfies the requested schema. Use only sanitized summaries and capability "
+        "metadata. Do not include raw rows, raw paths, URLs, bucket names, secrets, "
+        "credentials, hidden commands, raw prompts, provider responses, execution commands, "
+        "or app mutations."
     )
     user = (
-        "Create a plan JSON object matching this exact shape: "
+        "Create a plan JSON object with exactly these top-level keys: "
         "{\"user_goal_summary\": string, \"assumptions\": string[], "
-        "\"missing_inputs\": string[], \"steps\": step[]} where each step has "
+        "\"missing_inputs\": string[], \"steps\": step[]}. Each step must have "
         "step_id, title, capability_id, app_id, risk_tier, operation='plan', "
         "preflight_required, requires_confirmation, action_input, expected_artifacts, "
         "and validation_checks. Use only capability_ids in the supplied capabilities. "
@@ -172,7 +217,15 @@ def _call_openai(status: ProviderRuntimeStatus, prompt_packet: Mapping[str, str]
             {"role": "user", "content": prompt_packet["user"]},
         ],
         "max_output_tokens": 1800,
-        "text": {"verbosity": "low"},
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "quant_agent_provider_plan",
+                "schema": _PLAN_OUTPUT_JSON_SCHEMA,
+                "strict": False,
+            },
+            "verbosity": "low",
+        },
     }
     request = urllib.request.Request(
         url,
@@ -249,11 +302,16 @@ def _openai_response_text(body: object) -> str:
         for item in body.get("output", []):
             if not isinstance(item, Mapping):
                 continue
-            for content in item.get("content", []):
+            content_items = item.get("content", [])
+            if isinstance(content_items, str):
+                content_items = [{"text": content_items}]
+            for content in content_items:
                 if isinstance(content, Mapping) and isinstance(content.get("text"), str):
                     text = str(content["text"]).strip()
                     if text:
                         parts.append(text)
+                elif isinstance(content, Mapping) and isinstance(content.get("json"), Mapping):
+                    parts.append(json.dumps(content["json"]))
         if parts:
             return "\n".join(parts)
     return ""

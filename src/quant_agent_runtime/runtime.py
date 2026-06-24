@@ -72,6 +72,10 @@ from quant_agent_runtime.workflow_runner import (
     WORKFLOW_TEMPLATE_SUPPORT_LEVEL,
     WorkflowRunService,
 )
+from quant_agent_runtime.workflow_scope_resolution import (
+    WORKFLOW_SCOPE_RESOLUTION_SUPPORT_LEVEL,
+    WorkflowScopeResolutionService,
+)
 
 
 SUPPORT_BUNDLE_CONTRACT_SCHEMA = "agent_support_bundle.v1.schema.json"
@@ -103,6 +107,7 @@ class RuntimeContainer:
     external_approval: ExternalApprovalService | None = None
     external_approval_submission: ExternalApprovalSubmissionService | None = None
     workflow_runner: WorkflowRunService | None = None
+    workflow_scope_resolution: WorkflowScopeResolutionService | None = None
 
     def support_bundle(self, run_id: str) -> AgentSupportBundleResult:
         manifest = self.manifest()
@@ -289,6 +294,11 @@ class RuntimeContainer:
             )
         return self.workflow_runner
 
+    def workflow_scope_resolution_service(self) -> WorkflowScopeResolutionService:
+        if self.workflow_scope_resolution is None:
+            self.workflow_scope_resolution = WorkflowScopeResolutionService()
+        return self.workflow_scope_resolution
+
     def manifest(self) -> RuntimeManifest:
         contract_result = self.contract_loader.load_agent_contracts()
         provider_status = self.provider_status or self.contract_loader.load_agent_provider_status()
@@ -371,7 +381,9 @@ class RuntimeContainer:
             user_workflow_support_level="manual_user_owned_consent_gate_only",
             user_plan_approval_support_level="manual_active_plan_approval_only",
             workflow_run_support_level=WORKFLOW_RUN_SUPPORT_LEVEL,
+            workflow_scope_resolution_support_level=WORKFLOW_SCOPE_RESOLUTION_SUPPORT_LEVEL,
             workflow_template_support_level=WORKFLOW_TEMPLATE_SUPPORT_LEVEL,
+            long_running_action_support_level="ledgered_running_app_action_reference_v1",
             supported_workflow_scopes=[
                 "full_lifecycle",
                 "app_workflow",

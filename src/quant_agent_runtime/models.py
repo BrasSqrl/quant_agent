@@ -215,6 +215,7 @@ OrchestrationStepStatus = Literal[
     "needs_confirmation",
     "ready_for_action_request",
     "ready_for_execution",
+    "running",
     "completed",
     "completed_with_warnings",
     "failed_recoverable",
@@ -280,6 +281,23 @@ class WorkflowRunStatusResult(StrictModel):
     workflow_scope: WorkflowRunScopeSummary | None = None
     run_status: RunStatusResult
     orchestration: RunOrchestrationResult
+    validation: PlanValidationResult
+    ledger_recorded: Literal[False] = False
+
+
+class WorkflowScopeResolutionRequest(StrictModel):
+    goal: str = Field(min_length=1)
+    source_app: str | None = None
+    source_stage: str | None = None
+    context_summary: dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkflowScopeResolutionResult(StrictModel):
+    goal: str
+    resolution_status: Literal["resolved"]
+    resolved_request: WorkflowRunRequest
+    workflow_scope: WorkflowRunScopeSummary
+    resolution_summary: dict[str, Any] = Field(default_factory=dict)
     validation: PlanValidationResult
     ledger_recorded: Literal[False] = False
 
@@ -1197,7 +1215,9 @@ class RuntimeManifest(StrictModel):
     user_workflow_support_level: str = "not_available"
     user_plan_approval_support_level: str = "not_available"
     workflow_run_support_level: str = "not_available"
+    workflow_scope_resolution_support_level: str = "not_available"
     workflow_template_support_level: str = "not_available"
+    long_running_action_support_level: str = "not_available"
     supported_workflow_scopes: list[str] = Field(default_factory=list)
     autopilot_support_level: str = "not_available"
     sample_reset_support_level: str = "not_available"

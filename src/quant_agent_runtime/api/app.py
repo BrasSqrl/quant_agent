@@ -32,6 +32,7 @@ from quant_agent_runtime.models import (
     PlanRevisionActivationResult,
     PlanRevisionRequest,
     PlanRevisionResult,
+    PlanValidationResult,
     PreflightRequest,
     PreflightResult,
     PlanRequest,
@@ -69,6 +70,8 @@ from quant_agent_runtime.models import (
     WorkflowRunRequest,
     WorkflowRunResult,
     WorkflowRunStatusResult,
+    WorkflowScopeResolutionRequest,
+    WorkflowScopeResolutionResult,
 )
 from quant_agent_runtime.governance import GovernanceService
 from quant_agent_runtime.runtime import RuntimeContainer, build_runtime
@@ -151,6 +154,28 @@ def create_app(runtime: RuntimeContainer | None = None) -> FastAPI:
         try:
             require_governance("POST /workflow-runs")
             return runtime_container.workflow_service().create_workflow_run(request)
+        except RuntimeValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
+
+    @api.post("/workflow-scope-resolutions", response_model=WorkflowScopeResolutionResult)
+    def resolve_workflow_scope(request: WorkflowScopeResolutionRequest) -> WorkflowScopeResolutionResult:
+        try:
+            require_governance("POST /workflow-scope-resolutions")
+            resolution = runtime_container.workflow_scope_resolution_service().resolve(
+                request.goal,
+                source_app=request.source_app,
+                context_summary=request.context_summary,
+            )
+            scope = runtime_container.workflow_service().resolve_scope_summary(resolution.request)
+            return WorkflowScopeResolutionResult(
+                goal=request.goal,
+                resolution_status="resolved",
+                resolved_request=resolution.request,
+                workflow_scope=scope,
+                resolution_summary=resolution.summary,
+                validation=PlanValidationResult(status="valid"),
+                ledger_recorded=False,
+            )
         except RuntimeValidationError as exc:
             raise HTTPException(status_code=422, detail=exc.to_problem()) from exc
 

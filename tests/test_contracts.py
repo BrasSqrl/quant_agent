@@ -381,6 +381,10 @@ def test_canonical_capability_example_is_loaded_and_mapped() -> None:
         "quant_documentation.draft_section",
         "quant_documentation.find_unsupported_claims",
         "quant_documentation.export_markdown_review_package",
+        "quant_monitoring.inspect_bundle",
+        "quant_monitoring.prepare_profile_draft",
+        "quant_monitoring.run_monitoring_review",
+        "quant_monitoring.create_feedback_signal",
     ]
     assert enabled_capabilities[1].confirmation_required is True
     assert enabled_capabilities[1].required_fields == ["target_summary"]
@@ -388,6 +392,46 @@ def test_canonical_capability_example_is_loaded_and_mapped() -> None:
         item.capability_id == "quant_data.create_eda_plan" and item.enabled and item.confirmation_required
         for item in capabilities
     )
+
+
+def test_canonical_full_lifecycle_template_chains_all_app_workflows() -> None:
+    templates = QuantSuiteContractLoader(QUANT_SUITE_ROOT).load_agent_workflow_templates()
+    full_lifecycle = next(
+        item for item in templates["workflow_templates"] if item["workflow_id"] == "full_lifecycle_default"
+    )
+
+    capability_ids = [step["capability_id"] for step in full_lifecycle["steps"]]
+
+    assert len(capability_ids) == 20
+    assert capability_ids[:5] == [
+        "quant_data.register_source_reference",
+        "quant_data.run_source_preflight",
+        "quant_data.create_eda_plan",
+        "quant_data.run_eda_review",
+        "quant_data.export_eda_handoff",
+    ]
+    assert capability_ids[5:10] == [
+        "quant_studio.run_model_readiness_check",
+        "quant_studio.prepare_model_config_draft",
+        "quant_studio.fit_candidate_model",
+        "quant_studio.compare_candidate_runs",
+        "quant_studio.create_documentation_package",
+    ]
+    assert capability_ids[10:15] == [
+        "quant_documentation.inspect_package",
+        "quant_documentation.create_draft_workspace",
+        "quant_documentation.draft_section",
+        "quant_documentation.find_unsupported_claims",
+        "quant_documentation.export_markdown_review_package",
+    ]
+    assert capability_ids[15:] == [
+        "quant_monitoring.inspect_bundle",
+        "quant_monitoring.prepare_profile_draft",
+        "quant_monitoring.validate_bundle",
+        "quant_monitoring.run_monitoring_review",
+        "quant_monitoring.create_feedback_signal",
+    ]
+    assert [step["implementation_status"] for step in full_lifecycle["steps"]] == ["available"] * 20
 
 
 def test_canonical_provider_config_example_is_loaded_and_mapped() -> None:

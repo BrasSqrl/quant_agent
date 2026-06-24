@@ -30,11 +30,17 @@ canonical agent contracts in this repository.
 - Do not add Quant Documentation drafting internals.
 - Do not add Quant Monitoring run logic.
 - Do not expose provider keys to browser clients.
-- Do not call real LLM providers until provider configuration and secret
-  handling are designed.
-- Do not mutate app state in plan-only mode.
-- Do not add execution routes before policy, preflight, confirmation, and
-  ledger contracts exist.
+- Call OpenAI or Ollama only through the server-side shared LLM planning
+  gateway and only when configured by environment. Never add browser provider
+  key handling.
+- Keep model providers limited to planning and explanation. App APIs own
+  workflow execution.
+- Do not mutate app state from planning, preview, support-bundle, or read-only
+  routes.
+- Do not add new execution routes or executable capabilities without policy,
+  preflight, confirmation, contract validation, app-owned API boundaries, and
+  ledger coverage.
+- Do not add generic `/execute` or `POST /runs` routes.
 - Do not run shell commands from model output.
 - Keep all agent actions bounded by capabilities, policy, validation, and
   ledgering.

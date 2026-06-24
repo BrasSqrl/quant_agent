@@ -31,7 +31,7 @@ class FakePlanProvider(ModelProvider):
     def generate_plan(self, request: ProviderPlanRequest) -> ProviderResult:
         steps: list[dict[str, object]] = []
         missing_inputs: list[str] = []
-        capabilities = self._capabilities_for_plan(request.capabilities)
+        capabilities = self._capabilities_for_plan(request)
 
         for index, capability in enumerate(capabilities, start=1):
             if not capability.enabled or capability.risk_tier == RiskTier.forbidden:
@@ -40,10 +40,13 @@ class FakePlanProvider(ModelProvider):
             for field in capability.required_fields:
                 field_summary = self._safe_field_summary(field, request.context_summary)
                 if field_summary is None:
-                    missing_inputs.append(
-                        f"{capability.capability_id} requires {field}."
-                    )
-                    action_input[field] = "[missing]"
+                    if self._is_deferred_full_lifecycle_field(field, request.context_summary):
+                        action_input[field] = "Pending upstream workflow handoff."
+                    else:
+                        missing_inputs.append(
+                            f"{capability.capability_id} requires {field}."
+                        )
+                        action_input[field] = "[missing]"
                 else:
                     action_input[field] = field_summary
             requires_confirmation = (
@@ -84,7 +87,10 @@ class FakePlanProvider(ModelProvider):
         metadata = self._provider_metadata_for(request)
         return ProviderResult(raw_output=raw_output, metadata=metadata)
 
-    def _capabilities_for_plan(self, capabilities: list) -> list:
+    def _capabilities_for_plan(self, request: ProviderPlanRequest) -> list:
+        capabilities = request.capabilities
+        if isinstance(request.context_summary.get("workflow_scope"), dict):
+            return capabilities
         by_id = {capability.capability_id: capability for capability in capabilities}
         if (
             len(capabilities) > len(_BASELINE_PLAN_CAPABILITY_ORDER)
@@ -105,6 +111,14 @@ class FakePlanProvider(ModelProvider):
         if isinstance(value, list) and value:
             return copy.deepcopy(value[:20])
         return None
+
+    def _is_deferred_full_lifecycle_field(self, field: str, context_summary: dict[str, object]) -> bool:
+        scope = context_summary.get("workflow_scope")
+        return (
+            isinstance(scope, dict)
+            and scope.get("workflow_scope") == "full_lifecycle"
+            and field in {"target_summary", "package_summary", "bundle_summary"}
+        )
 
     def _provider_metadata_for(self, request: ProviderPlanRequest) -> ProviderMetadata:
         effective_mode = self._provider_status.effective_provider_mode

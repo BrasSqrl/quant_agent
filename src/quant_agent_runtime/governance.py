@@ -41,6 +41,7 @@ READ_ROUTES = [
 
 MUTATING_ROUTES = [
     "POST /plans",
+    "POST /workflow-scope-resolutions",
     "POST /workflow-runs",
     "POST /workflow-runs/{run_id}/advance",
     "POST /workflow-runs/{run_id}/advance-until-blocked",

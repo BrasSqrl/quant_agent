@@ -54,6 +54,42 @@ def default_capabilities() -> list[CapabilityDefinition]:
             required_fields=["bundle_summary"],
             preflight_required=True,
         ),
+        CapabilityDefinition(
+            capability_id="quant_monitoring.inspect_bundle",
+            app_id="quant_monitoring",
+            display_name="Inspect monitoring bundle",
+            risk_tier=RiskTier.read_only,
+            required_fields=["bundle_summary"],
+            execution_supported=True,
+        ),
+        CapabilityDefinition(
+            capability_id="quant_monitoring.prepare_profile_draft",
+            app_id="quant_monitoring",
+            display_name="Prepare monitoring profile draft",
+            risk_tier=RiskTier.draft_only,
+            required_fields=["bundle_summary"],
+            confirmation_required=True,
+            execution_supported=True,
+        ),
+        CapabilityDefinition(
+            capability_id="quant_monitoring.run_monitoring_review",
+            app_id="quant_monitoring",
+            display_name="Run monitoring review",
+            risk_tier=RiskTier.expensive_compute,
+            required_fields=["bundle_summary"],
+            preflight_required=True,
+            confirmation_required=True,
+            execution_supported=True,
+        ),
+        CapabilityDefinition(
+            capability_id="quant_monitoring.create_feedback_signal",
+            app_id="quant_monitoring",
+            display_name="Create feedback signal",
+            risk_tier=RiskTier.reversible_write,
+            required_fields=["bundle_summary"],
+            confirmation_required=True,
+            execution_supported=True,
+        ),
     ]
 
 
