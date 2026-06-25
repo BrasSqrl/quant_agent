@@ -14,6 +14,7 @@ from quant_agent_runtime.models import (
     RiskTier,
 )
 from quant_agent_runtime.provider_config import internal_provider_status
+from quant_agent_runtime.summary_text import compact_safe_summary_text
 
 _BASELINE_PLAN_CAPABILITY_ORDER = [
     "quant_data.run_source_preflight",
@@ -104,6 +105,8 @@ class FakePlanProvider(ModelProvider):
 
     def _safe_field_summary(self, field: str, context_summary: dict[str, object]) -> object | None:
         value = context_summary.get(field)
+        if field == "target_summary":
+            return compact_safe_summary_text(value, label="Studio target summary")
         if isinstance(value, str) and value.strip():
             return value[:240]
         if isinstance(value, dict) and value:

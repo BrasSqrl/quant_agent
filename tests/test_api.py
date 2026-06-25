@@ -7183,6 +7183,99 @@ def test_missing_required_context_fields_become_missing_inputs() -> None:
     assert payload["plan"]["proposed_steps"][0]["action_input"]["source_summary"] == "[missing]"
 
 
+def test_studio_workflow_derives_target_summary_from_direct_studio_source_context() -> None:
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
+
+    response = client.post(
+        "/workflow-runs",
+        json={
+            "goal": "Run Quant Studio steps 1-5.",
+            "workflow_scope": "app_workflow",
+            "source_app": "quant_studio",
+            "context_summary": {
+                "lifecycle_summary": {
+                    "lifecycle_id": "lifecycle_direct_studio",
+                    "state": "needs_data",
+                    "ownership": "user_owned",
+                },
+                "source_summary": {
+                    "source_references": [
+                        {
+                            "reference_id": "studio_source_ref",
+                            "reference_type": "source_reference",
+                            "label": "Direct Studio uploaded dataset",
+                            "status": "registered",
+                            "app_id": "quant_studio",
+                        }
+                    ]
+                },
+                "target_summary": {
+                    "studio_runs": [],
+                    "champion_model": None,
+                    "champion_history_count": 0,
+                },
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["run_state"] == "planned"
+    assert payload["plan"]["status"] == "valid"
+    assert payload["plan"]["missing_inputs"] == []
+    first_input = payload["plan"]["proposed_steps"][0]["action_input"]
+    assert isinstance(first_input["target_summary"], str)
+    assert "Direct Studio uploaded dataset" in first_input["target_summary"]
+
+
+def test_studio_workflow_preflight_receives_text_target_summary_from_structured_context() -> None:
+    app_client = FakePreflightAppClient()
+    client = TestClient(create_app(runtime_with_preflight_client(app_client)))
+
+    create_response = client.post(
+        "/workflow-runs",
+        json={
+            "goal": "Run Quant Studio steps 1-5.",
+            "workflow_scope": "app_workflow",
+            "source_app": "quant_studio",
+            "context_summary": {
+                "lifecycle_summary": {
+                    "lifecycle_id": "lifecycle_sample_studio",
+                    "state": "ready_for_modeling",
+                    "sample_workspace": {
+                        "sample_workspace": True,
+                        "sample_owned": True,
+                        "sample_workspace_id": "credit_pd_scorecard_panel",
+                    },
+                },
+                "target_summary": {
+                    "studio_runs": [
+                        {
+                            "reference_id": "studio_run_context",
+                            "reference_type": "studio_run",
+                            "label": "Direct Studio modeling context",
+                            "status": "available",
+                            "app_id": "quant_studio",
+                        }
+                    ],
+                    "champion_model": None,
+                    "champion_history_count": 0,
+                },
+            },
+        },
+    )
+    assert create_response.status_code == 200
+    run_id = create_response.json()["run_id"]
+
+    advance_response = client.post(f"/workflow-runs/{run_id}/advance-until-blocked", json={})
+
+    assert advance_response.status_code == 200
+    assert app_client.calls
+    action_input = app_client.calls[0]["payload"]["action_input"]
+    assert isinstance(action_input["target_summary"], str)
+    assert "Direct Studio modeling context" in action_input["target_summary"]
+
+
 def test_no_execution_endpoint_exists() -> None:
     client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
 

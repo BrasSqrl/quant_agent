@@ -33,6 +33,7 @@ from quant_agent_runtime.planner import PlannerService
 from quant_agent_runtime.preflight import PreflightService
 from quant_agent_runtime.retry import RetryService
 from quant_agent_runtime.run_status import RunStatusService
+from quant_agent_runtime.summary_text import compact_safe_summary_text, has_meaningful_summary
 from quant_agent_runtime.validation.errors import RuntimeValidationError
 
 
@@ -85,11 +86,12 @@ class WorkflowRunService:
             for capability_id in scope.selected_capability_ids
             if capability_id in by_capability_id
         ]
+        context_summary = _context_summary_for_scope(request.context_summary, scope)
         plan_result = self._planner.create_plan(
             PlanRequest(
                 user_goal=request.goal,
                 context_summary={
-                    **request.context_summary,
+                    **context_summary,
                     "workflow_scope": scope.model_dump(mode="json"),
                 },
                 capabilities=selected,
@@ -562,6 +564,37 @@ def _unique(items: list[str]) -> list[str]:
         if item and item not in result:
             result.append(item)
     return result
+
+
+def _context_summary_for_scope(
+    context_summary: dict[str, Any],
+    scope: WorkflowRunScopeSummary,
+) -> dict[str, Any]:
+    result = dict(context_summary)
+    if not _scope_selects_studio(scope):
+        return result
+
+    target_text = compact_safe_summary_text(
+        result.get("target_summary"),
+        label="Studio target summary",
+    )
+    if target_text is not None:
+        result["target_summary"] = target_text
+        return result
+
+    source_summary = result.get("source_summary")
+    if has_meaningful_summary(source_summary):
+        source_text = compact_safe_summary_text(
+            source_summary,
+            label="Direct Studio source summary",
+        )
+        if source_text is not None:
+            result["target_summary"] = source_text
+    return result
+
+
+def _scope_selects_studio(scope: WorkflowRunScopeSummary) -> bool:
+    return any(capability_id.startswith("quant_studio.") for capability_id in scope.selected_capability_ids)
 
 
 def _safe_str(value: Any) -> str | None:

@@ -15,7 +15,7 @@ The simplest successful path is:
 4. Confirm the Workbench is using the lifecycle or context that contains your
    loaded dataset.
 5. Choose one of the guided workflow buttons:
-   `Run Quant Workflow`, `Run Quant Studio`, or `Run Quant Monitoring`.
+   `Run Quant Data`, `Run Quant Studio`, or `Run Quant Monitoring`.
 6. If you need extra instructions, type them in the prompt box first, then
    click the guided button. For example: `Use an XGBoost model that is
    conservative`, then click `Run Quant Studio`.
@@ -91,7 +91,7 @@ The three primary guided buttons submit fixed app-scoped workflow runs:
 
 | Guided button | What it starts | Required starting point |
 | --- | --- | --- |
-| `Run Quant Workflow` | Quant Data steps 1-5 | data loaded in Quant Data step 1 |
+| `Run Quant Data` | Quant Data steps 1-5 | data loaded in Quant Data step 1 |
 | `Run Quant Studio` | Quant Studio steps 1-5 | data or a handoff loaded in Studio step 1 |
 | `Run Quant Monitoring` | Quant Monitoring steps 1-5 | monitoring bundle loaded in Monitoring step 1 |
 
@@ -225,7 +225,7 @@ This section explains the buttons you are most likely to use.
 
 | Button | Use it when | What it does |
 | --- | --- | --- |
-| `Run Quant Workflow` | Your data is loaded in Quant Data and you want Data steps 1-5. | Creates a Quant Data app-scoped workflow run. |
+| `Run Quant Data` | Your data is loaded in Quant Data and you want Data steps 1-5. | Creates a Quant Data app-scoped workflow run. |
 | `Run Quant Studio` | You want Studio steps 1-5, with any prompt text used as extra intent. | Creates a Quant Studio app-scoped workflow run. |
 | `Run Quant Monitoring` | You want Monitoring steps 1-5 for a loaded monitoring bundle. | Creates a Quant Monitoring app-scoped workflow run. |
 | prompt send button | You have typed a custom scoped request. | Creates the governed plan/workflow run from the prompt. |
@@ -265,7 +265,7 @@ In the agent prompt box, type:
 Run the full Quant Suite workflow for this loaded dataset.
 ```
 
-Click the prompt send button. The guided `Run Quant Workflow` button is for
+Click the prompt send button. The guided `Run Quant Data` button is for
 Quant Data steps 1-5, not the full 20-step lifecycle.
 
 Expected result:

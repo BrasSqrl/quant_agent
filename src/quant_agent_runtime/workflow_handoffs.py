@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from quant_agent_runtime.models import LedgerEntry, PlanValidationResult, ValidationIssue
+from quant_agent_runtime.summary_text import compact_safe_summary_text
 from quant_agent_runtime.validation.errors import RuntimeValidationError
 
 
@@ -59,6 +60,14 @@ def action_input_with_workflow_handoffs(
     capability_id = str(step.get("capability_id") or "")
     step_id = str(step.get("step_id") or "")
     action_input = dict(step.get("action_input") if isinstance(step.get("action_input"), dict) else {})
+
+    if capability_id.startswith("quant_studio."):
+        target_text = compact_safe_summary_text(
+            action_input.get("target_summary"),
+            label="Studio target summary",
+        )
+        if target_text is not None:
+            action_input["target_summary"] = target_text
 
     if capability_id in {STUDIO_READINESS_CAPABILITY_ID, STUDIO_DRAFT_CAPABILITY_ID}:
         eda_handoff = _latest_reference(entry, "eda_handoff")
