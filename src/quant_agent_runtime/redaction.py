@@ -6,6 +6,8 @@ from typing import Any
 from quant_agent_runtime.models import RedactionSummary, ValidationIssue
 
 
+_CAMEL_CASE_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
 UNSAFE_KEYS = {
     "secret",
     "secrets",
@@ -13,8 +15,25 @@ UNSAFE_KEYS = {
     "credentials",
     "password",
     "token",
+    "access_token",
+    "access_tokens",
     "api_key",
+    "api_keys",
+    "auth_token",
+    "auth_tokens",
     "authorization",
+    "authorization_header",
+    "bearer_token",
+    "bearer_tokens",
+    "client_secret",
+    "client_secrets",
+    "id_token",
+    "id_tokens",
+    "refresh_token",
+    "refresh_tokens",
+    "secret_key",
+    "secret_keys",
+    "passwords",
     "records",
     "rows",
     "table_records",
@@ -44,11 +63,38 @@ UNSAFE_KEYS = {
     "url",
     "urls",
 }
+UNSAFE_KEY_SUFFIXES = (
+    "_api_key",
+    "_api_keys",
+    "_authorization",
+    "_authorization_header",
+    "_bearer_token",
+    "_bearer_tokens",
+    "_client_secret",
+    "_client_secrets",
+    "_credential",
+    "_credentials",
+    "_id_token",
+    "_id_tokens",
+    "_password",
+    "_password_value",
+    "_passwords",
+    "_refresh_token",
+    "_refresh_tokens",
+    "_secret",
+    "_secret_key",
+    "_secret_keys",
+    "_token",
+)
 
 UNSAFE_VALUE_PATTERNS = [
     re.compile(r"\b[A-Za-z]:[\\/][^\s]+"),
     re.compile(r"\bs3://[^\s]+", re.IGNORECASE),
     re.compile(r"\bhttps?://[^\s]+", re.IGNORECASE),
+    re.compile(
+        r"\b[A-Za-z0-9_-]*(?:api[_-]?key|access[_-]?token|auth[_-]?token|authorization|bearer[_-]?token|client[_-]?secret|credential|id[_-]?token|password|refresh[_-]?token|secret[_-]?key|secret|token)\s*[:=]\s*(?:Bearer\s+)?[^\s\"',}]+",
+        re.IGNORECASE,
+    ),
     re.compile(
         r"\b(?:rm\s+-rf|del\s+/[sq]|powershell\s+-|cmd\.exe|bash\s+-c|sh\s+-c|curl\s+|Invoke-WebRequest|Start-Process)\b",
         re.IGNORECASE,
@@ -57,11 +103,15 @@ UNSAFE_VALUE_PATTERNS = [
 
 
 def normalize_key(key: str) -> str:
-    return key.strip().lower().replace("-", "_")
+    normalized = _CAMEL_CASE_BOUNDARY_RE.sub("_", key.strip())
+    return normalized.lower().replace("-", "_").replace(" ", "_")
 
 
 def is_unsafe_key(key: str) -> bool:
-    return normalize_key(key) in UNSAFE_KEYS
+    normalized = normalize_key(key)
+    return normalized in UNSAFE_KEYS or any(
+        normalized.endswith(suffix) for suffix in UNSAFE_KEY_SUFFIXES
+    )
 
 
 def redact_text(text: str) -> tuple[str, bool]:

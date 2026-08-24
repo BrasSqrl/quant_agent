@@ -7,10 +7,12 @@ from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from quant_agent_runtime.redaction import redact_text, sanitize_value
+
 
 class AppClientError(Exception):
     def __init__(self, message: str, status_code: int = 502) -> None:
-        super().__init__(message)
+        super().__init__(_safe_error_text(message))
         self.status_code = status_code
 
 
@@ -94,7 +96,7 @@ class LocalAgentAppClient:
         except HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
             raise AppClientError(
-                f"Preflight app returned HTTP {exc.code}: {detail[:240]}",
+                f"Preflight app returned HTTP {exc.code}: {_safe_error_detail(detail)}",
                 status_code=502,
             ) from exc
         except (OSError, URLError) as exc:
@@ -135,7 +137,7 @@ class LocalAgentAppClient:
         except HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
             raise AppClientError(
-                f"Execution app returned HTTP {exc.code}: {detail[:240]}",
+                f"Execution app returned HTTP {exc.code}: {_safe_error_detail(detail)}",
                 status_code=502,
             ) from exc
         except (OSError, URLError) as exc:
@@ -219,3 +221,17 @@ def _app_label(app_id: str) -> str:
     if app_id == "quant_monitoring":
         return "Quant Monitoring"
     return app_id
+
+
+def _safe_error_detail(detail: str) -> str:
+    try:
+        parsed = json.loads(detail)
+    except json.JSONDecodeError:
+        return _safe_error_text(detail)
+    sanitized, _summary = sanitize_value(parsed, path="app_error")
+    return _safe_error_text(json.dumps(sanitized, sort_keys=True, separators=(",", ":")))
+
+
+def _safe_error_text(text: str) -> str:
+    redacted, _changed = redact_text(text)
+    return redacted[:240]

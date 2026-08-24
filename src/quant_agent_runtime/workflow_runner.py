@@ -25,6 +25,7 @@ from quant_agent_runtime.models import (
     WorkflowAdvanceUntilBlockedResult,
     WorkflowRunRequest,
     WorkflowRunResult,
+    RunOrchestrationResult,
     WorkflowRunScopeSummary,
     WorkflowRunStatusResult,
 )
@@ -138,6 +139,18 @@ class WorkflowRunService:
         orchestration = self._orchestration.get_run_orchestration(run_id)
         current_step = next((step for step in orchestration.steps if step.is_current), None)
         if current_step is None:
+            if orchestration.run_state not in {"completed", "completed_with_warnings"}:
+                return self._record_advance_result(
+                    run_id=run_id,
+                    scope=scope,
+                    advance_status="blocked",
+                    selected_action=None,
+                    delegated_result={
+                        "blocker_reason": _no_current_step_blocker(orchestration),
+                        "allowed_actions": orchestration.allowed_next_actions,
+                        "run_state": orchestration.run_state,
+                    },
+                )
             return self._record_advance_result(
                 run_id=run_id,
                 scope=scope,
@@ -528,6 +541,20 @@ def _select_advance_action(actions: list[str]) -> str | None:
         if action in actions:
             return action
     return None
+
+
+def _no_current_step_blocker(orchestration: RunOrchestrationResult) -> str:
+    if orchestration.run_state == "waiting_for_input":
+        return "The recorded plan is blocked by missing inputs and cannot advance."
+    if orchestration.run_state == "cancelled":
+        return "The run has been cancelled."
+    if orchestration.run_state == "sample_reset":
+        return "The sample-owned demo run has been reset."
+    if orchestration.run_state == "paused":
+        return "The run is paused and must be resumed before it can advance."
+    if orchestration.final_status:
+        return f"The run is in terminal status {orchestration.final_status}."
+    return "No current orchestration step is available for workflow advancement."
 
 
 def _workflow_created_event(scope: WorkflowRunScopeSummary) -> dict[str, Any]:

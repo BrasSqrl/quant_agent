@@ -66,12 +66,6 @@ class WorkflowScopeResolutionService:
         detected_capabilities = _detect_capabilities(normalized)
         stage_range = _detect_stage_range(normalized)
 
-        if _looks_like_unsupported_quant_app(normalized):
-            raise _rejected(
-                "workflow_scope_unknown_app",
-                "The prompt references an app that is not a known Quant Suite workflow app.",
-            )
-
         if _is_full_lifecycle_request(normalized):
             workflow_request = WorkflowRunRequest(
                 goal=goal,
@@ -82,6 +76,12 @@ class WorkflowScopeResolutionService:
             return WorkflowScopeResolution(
                 request=workflow_request,
                 summary=_summary("full_lifecycle_keywords", detected_app, [], None, 0.93),
+            )
+
+        if _looks_like_unsupported_quant_app(normalized):
+            raise _rejected(
+                "workflow_scope_unknown_app",
+                "The prompt references an app that is not a known Quant Suite workflow app.",
             )
 
         if _studio_fit_range_requested(normalized, detected_app, detected_capabilities, stage_range):
@@ -170,6 +170,7 @@ class WorkflowScopeResolutionService:
 def _normalize(value: str) -> str:
     normalized = value.lower()
     normalized = normalized.replace("->", " to ")
+    normalized = normalized.replace("end-to-end", "end to end")
     normalized = normalized.replace("through", " through ")
     normalized = re.sub(r"\s+", " ", normalized)
     return normalized.strip()
@@ -231,6 +232,9 @@ def _is_full_lifecycle_request(goal: str) -> bool:
     return (
         ("full" in goal or "entire" in goal or "whole" in goal or "end to end" in goal)
         and ("workflow" in goal or "lifecycle" in goal or "suite" in goal)
+    ) or (
+        "quant suite" in goal
+        and ("workflow" in goal or "lifecycle" in goal or goal.startswith("run quant suite"))
     ) or "data to studio" in goal or "data studio documentation monitoring" in goal
 
 

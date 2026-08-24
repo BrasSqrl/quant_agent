@@ -7276,6 +7276,71 @@ def test_studio_workflow_preflight_receives_text_target_summary_from_structured_
     assert "Direct Studio modeling context" in action_input["target_summary"]
 
 
+def test_workflow_advance_until_blocked_does_not_complete_waiting_input_run() -> None:
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
+
+    create_response = client.post(
+        "/workflow-runs",
+        json={
+            "goal": "Run Quant Studio steps 1-5.",
+            "workflow_scope": "app_workflow",
+            "source_app": "quant_studio",
+            "context_summary": {
+                "lifecycle_summary": {
+                    "lifecycle_id": "lifecycle_needs_data",
+                    "state": "needs_data",
+                }
+            },
+        },
+    )
+    assert create_response.status_code == 200
+    run_payload = create_response.json()
+    assert run_payload["run_state"] == "waiting_for_input"
+    assert run_payload["plan"]["status"] == "blocked"
+
+    advance_response = client.post(
+        f"/workflow-runs/{run_payload['run_id']}/advance-until-blocked",
+        json={},
+    )
+
+    assert advance_response.status_code == 200
+    payload = advance_response.json()
+    assert payload["advance_status"] == "blocked"
+    assert payload["completed_action_count"] == 0
+    assert payload["run_state"] == "waiting_for_input"
+    assert payload["last_result"]["advance_status"] == "blocked"
+    delegated = payload["last_result"]["delegated_result"]
+    assert delegated["run_state"] == "waiting_for_input"
+    assert "missing inputs" in delegated["blocker_reason"]
+
+
+@pytest.mark.parametrize(
+    "goal",
+    [
+        "Run the Quant Suite workflow.",
+        "Run Quant Suite.",
+        "Run full Quant workflow.",
+        "Run the end-to-end workflow.",
+    ],
+)
+def test_workflow_scope_resolution_treats_quant_suite_prompt_as_full_lifecycle(goal: str) -> None:
+    client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
+
+    response = client.post(
+        "/workflow-scope-resolutions",
+        json={
+            "goal": goal,
+            "context_summary": {},
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["resolved_request"]["workflow_scope"] == "full_lifecycle"
+    assert payload["resolved_request"]["source_app"] == "quant_suite"
+    assert payload["workflow_scope"]["workflow_scope"] == "full_lifecycle"
+
+
 def test_no_execution_endpoint_exists() -> None:
     client = TestClient(create_app(runtime_with_preflight_client(FakePreflightAppClient())))
 
