@@ -10,6 +10,12 @@ remain in the sibling `../quant_suite` repository. This repository should load
 and validate against those contracts instead of defining canonical schemas of
 its own.
 
+The local modular runner plan is complete and retained in the
+[roadmap archive](../quant_suite/docs/archive/roadmaps/GOVERNED_AGENT_WORKFLOW_ROADMAP.md).
+Use [prompted workflow readiness](../quant_suite/docs/PROMPTED_AGENT_WORKFLOW_READINESS.md)
+for current operation and the [suite roadmap index](../quant_suite/docs/ROADMAP_INDEX.md)
+for unfinished work, rather than treating historical proposals as active scope.
+
 ## Current Runtime Shape
 
 The runtime is no longer plan-only. It supports a governed modular workflow

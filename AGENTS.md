@@ -16,12 +16,16 @@ Before changing runtime behavior, read the smallest relevant source context in
 `../quant_suite`, starting with:
 
 - `../quant_suite/AGENTS.md`
-- `../quant_suite/docs/GOVERNED_AGENT_WORKFLOW_ROADMAP.md`
+- `../quant_suite/docs/PROMPTED_AGENT_WORKFLOW_READINESS.md`
 - `../quant_suite/docs/ASSISTANT_SPEC.md`
 - `../quant_suite/docs/HANDOFF_CONTRACTS.md`
 
 Validate against `quant_suite` contracts when available. Do not create
 canonical agent contracts in this repository.
+
+For historical design decisions, use the completed runner plan linked from
+`../quant_suite/docs/ROADMAP_INDEX.md`; archived proposals are not instructions
+to expand the current implementation scope.
 
 ## Boundaries
 
